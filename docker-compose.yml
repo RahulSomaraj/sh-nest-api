@@ -1,0 +1,54 @@
+services:
+  mongo:
+    # Custom image bakes the seed scripts in via COPY (see docker/mongo.Dockerfile).
+    # Runtime bind mounts of the Windows host don't reliably reach the container,
+    # so the init scripts are built into the image instead.
+    build:
+      context: ./docker
+      dockerfile: mongo.Dockerfile
+    image: sh-mongo:7-seeded
+    container_name: sh-mongo
+    restart: unless-stopped
+    ports:
+      - "27017:27017"
+    environment:
+      # Root user (authSource=admin) — used only for administration.
+      MONGO_INITDB_ROOT_USERNAME: root
+      MONGO_INITDB_ROOT_PASSWORD: example
+      # Database the baked-in init scripts run against.
+      MONGO_INITDB_DATABASE: stayhopper
+    volumes:
+      - mongo-data:/data/db
+    healthcheck:
+      test: ["CMD", "mongosh", "--quiet", "--eval", "db.adminCommand('ping').ok"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+      start_period: 20s
+
+  api:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    container_name: sh-api
+    restart: unless-stopped
+    depends_on:
+      mongo:
+        condition: service_healthy
+    ports:
+      - "3008:3008"
+    # Load app secrets (SENDGRID key, API_SECRET, etc.) from .env, then
+    # override the DB settings to point at the mongo service in this network.
+    env_file:
+      - .env
+    environment:
+      NODE_ENV: production
+      PORT: "3008"
+      API_GLOBAL_PREFIX: admin/v2
+      MONGO_URL: mongodb://stayhopper:stayhopper123@mongo:27017/stayhopper?authSource=stayhopper
+      MONGO_USERNAME: stayhopper
+      MONGO_PASSWORD: stayhopper123
+      MONGO_AUTH_SOURCE: stayhopper
+
+volumes:
+  mongo-data:

@@ -1,0 +1,420 @@
+import { Injectable } from '@nestjs/common';
+import { InjectModel } from '@nestjs/mongoose';
+import { Model } from 'mongoose';
+import moment from 'moment';
+import { MailService } from '../../common/mail/mail.service';
+
+const activePopulations = [
+  { path: 'user' },
+  { path: 'room.room', populate: [{ path: 'room_name' }, { path: 'room_type' }] },
+  { path: 'property', populate: [{ path: 'contactinfo.country' }] },
+];
+
+const has = (permissions: string[], p: string) => permissions.indexOf(p) > -1;
+const cap = (s: string) => (s ? s.charAt(0).toUpperCase() + s.substring(1) : '');
+
+@Injectable()
+export class BookingsService {
+  constructor(
+    @InjectModel('userbookings') private readonly userBookingModel: Model<any>,
+    @InjectModel('completed_bookings') private readonly completedModel: Model<any>,
+    @InjectModel('properties') private readonly propertyModel: Model<any>,
+    @InjectModel('bookings') private readonly bookingModel: Model<any>,
+    @InjectModel('bookinglogs') private readonly bookingLogModel: Model<any>,
+    private readonly mailService: MailService,
+  ) {}
+
+  private buildPages(basePath: string, limit: number, pageCount: number, currentPage: number) {
+    const pages: { number: number; url: string }[] = [];
+    const maxPages = 10;
+    let start = Math.max(1, currentPage - Math.floor(maxPages / 2));
+    const end = Math.min(pageCount, start + maxPages - 1);
+    start = Math.max(1, Math.min(start, Math.max(1, end - maxPages + 1)));
+    for (let n = start; n <= end; n++) pages.push({ number: n, url: `${basePath}?page=${n}&limit=${limit}` });
+    return pages;
+  }
+
+  private maskGuest(guestinfo: any) {
+    if (!guestinfo) return;
+    if (guestinfo.email) {
+      guestinfo.email = guestinfo.email.replace(/^(.)(.*)(.@.*)$/, (_: any, a: string, b: string, c: string) =>
+        a + b.replace(/./g, '*') + c,
+      );
+    }
+    if (guestinfo.mobile) guestinfo.mobile = guestinfo.mobile.replace(/\d(?=\d{4})/g, '*');
+  }
+
+  private withHotelFinalAmount(item: any, charges: any[]) {
+    const finalCharges = (charges || []).filter(
+      (c: any) => c && typeof c.value === 'number' && c.value && c.id !== 'tourism_fee',
+    );
+    const pct = finalCharges.reduce((acc: number, r: any) => acc + r.value, 0);
+    if (typeof item.hotelAmt !== 'number' || item.hotelAmt <= 0) {
+      return { ...JSON.parse(JSON.stringify(item)), hotelFinalAmount: 0 };
+    }
+    const hotelFinalAmount = item.hotelAmt + (pct / 100) * item.hotelAmt;
+    return { ...JSON.parse(JSON.stringify(item)), hotelFinalAmount };
+  }
+
+  private async prepareWhere(query: any, user: any, permissions: string[]) {
+    const hasAll = has(permissions, 'LIST_ALL_BOOKINGS');
+    const hasOwn = has(permissions, 'LIST_OWN_BOOKINGS');
+    const status = query.status;
+    const where: any = {};
+
+    if (hasOwn && !hasAll) {
+      const propsWithAccess = await this.propertyModel
+        .find({ $or: [{ administrator: user._id }, { allAdministrators: { $in: [user._id] } }] })
+        .select('_id')
+        .lean();
+      const ids = propsWithAccess.map((p: any) => p._id);
+      where.$and = where.$and || [];
+      where.$and.push(
+        status === 'active' ? { property: { $in: ids } } : { 'propertyInfo.id': { $in: ids } },
+      );
+      // Hotel Admin / Receptionist roles → only paid bookings
+      if (
+        String(user.role?._id) === '5efc8ef65694cbf9675b28a3' ||
+        String(user.role?._id) === '5f1a9e9a016a9ccac0177d39'
+      ) {
+        where.paid = true;
+      }
+    }
+
+    if (query.property) {
+      if (status === 'active') where.property = query.property;
+      else where['propertyInfo.id'] = query.property;
+    }
+    if (query.user) where.user = query.user;
+    if (query.date) where.checkin_date = moment(new Date(query.date)).format('YYYY-MM-DD');
+    return where;
+  }
+
+  /** Manually attach property docs to completed bookings' propertyInfo.id (no populate). */
+  private async attachCompletedProperties(items: any[]) {
+    const ids = items.map((i) => i?.propertyInfo?.id).filter(Boolean);
+    if (!ids.length) return items;
+    const props = await this.propertyModel.find({ _id: { $in: ids } }).lean();
+    const byId = new Map(props.map((p: any) => [String(p._id), p]));
+    for (const it of items) {
+      const pid = it?.propertyInfo?.id;
+      if (pid && byId.has(String(pid))) it.propertyInfo.id = byId.get(String(pid));
+    }
+    return items;
+  }
+
+  async list(query: any, user: any, permissions: string[], basePath = '/admin/v2/bookings') {
+    const limit = Math.min(parseInt(query.limit, 10) || 10, 100);
+    const activePage = parseInt(query.page, 10) || 1;
+    const skip = (activePage - 1) * limit;
+
+    const status = query.status;
+    const active = !status || status === 'active';
+    const model = active ? this.userBookingModel : this.completedModel;
+    const where = await this.prepareWhere(query, user, permissions);
+
+    let sort: any = { _id: 1 };
+    if (query.order && query.orderBy && query.orderBy !== 'property') {
+      sort = {};
+      sort[query.orderBy] = query.order === 'asc' ? 1 : -1;
+    }
+
+    const hasAll = has(permissions, 'LIST_ALL_BOOKINGS');
+    const isPropertySort = query.orderBy === 'property';
+    const isAsc = query.order === 'asc';
+
+    let pageItems: any[];
+    if (isPropertySort) {
+      // Sort by a name that isn't natively sortable (populated / embedded) — load, sort, slice.
+      let all = await model.find(where).sort({ _id: 1 }).lean().exec();
+      if (active) {
+        all = await this.userBookingModel.populate(all, activePopulations);
+      } else {
+        all = await this.attachCompletedProperties(all);
+      }
+      const nameOf = (x: any) =>
+        (active ? x?.property?.name : x?.propertyInfo?.name || '')?.trim().toLowerCase() || '';
+      all.sort((a: any, b: any) => {
+        const na = nameOf(a);
+        const nb = nameOf(b);
+        return na < nb ? (isAsc ? -1 : 1) : na > nb ? (isAsc ? 1 : -1) : 0;
+      });
+      pageItems = all.slice(skip, skip + limit);
+    } else {
+      pageItems = await model.find(where).sort(sort).skip(skip).limit(limit).lean().exec();
+      if (active) pageItems = await this.userBookingModel.populate(pageItems, activePopulations);
+      else pageItems = await this.attachCompletedProperties(pageItems);
+    }
+
+    const [properties, itemCount] = await Promise.all([
+      hasAll
+        ? this.propertyModel.find({}).sort({ name: 1 }).select('_id name').lean()
+        : this.propertyModel
+            .find({ $or: [{ administrator: user._id }, { allAdministrators: { $in: [user._id] } }] })
+            .sort({ name: 1 })
+            .select('_id name')
+            .lean(),
+      model.countDocuments(where),
+    ]);
+
+    if (!hasAll) pageItems.forEach((it) => this.maskGuest(it.guestinfo || it.guestInfo));
+
+    const finalList = pageItems.map((it) => {
+      const charges = active ? it?.property?.charges : it?.propertyInfo?.id?.charges;
+      return this.withHotelFinalAmount(it, charges);
+    });
+
+    const pageCount = Math.ceil(itemCount / limit);
+    return {
+      list: finalList,
+      properties,
+      users: [],
+      itemCount,
+      pageCount,
+      pages: this.buildPages(basePath, limit, pageCount, activePage),
+      active_page: activePage,
+    };
+  }
+
+  async single(id: string, status: string, permissions: string[]) {
+    const active = !status || status === 'active';
+    const model = active ? this.userBookingModel : this.completedModel;
+    let resource: any = await model.findOne({ _id: id }).lean().exec();
+    if (!resource) return { notFound: true };
+
+    if (active) [resource] = await this.userBookingModel.populate([resource], activePopulations);
+    else [resource] = await this.attachCompletedProperties([resource]);
+
+    if (!has(permissions, 'LIST_ALL_BOOKINGS')) this.maskGuest(resource.guestinfo || resource.guestInfo);
+
+    const charges = active ? resource?.property?.charges : resource?.propertyInfo?.id?.charges;
+    const withAmt = this.withHotelFinalAmount(resource, charges);
+    return { hotelFinalAmount: withAmt.hotelFinalAmount, ...resource };
+  }
+
+  // ---- Cancellation / no-show flows ----
+
+  private async loadActive(id: string) {
+    return this.userBookingModel
+      .findOne({ _id: id })
+      .populate('property')
+      .populate({ path: 'room.room', populate: { path: 'room_type' } })
+      .lean()
+      .exec();
+  }
+
+  private roomTypes(rooms: any[], key: 'room' | 'info') {
+    let s = '';
+    (rooms || []).forEach((r: any) => {
+      s += key === 'room' ? r?.room?.room_type?.name || '' : r?.type || '';
+    });
+    return s.replace(/,\s*$/, '');
+  }
+
+  async cancel(id: string) {
+    const ub: any = await this.loadActive(id);
+    if (!ub) return { error: true };
+    await this.userBookingModel.updateOne({ _id: id }, { $set: { cancel_request: 1 } });
+
+    const guest = ub.guestinfo || {};
+    const date = moment(`${ub.checkin_date} ${ub.checkin_time}`).format('dddd YYYY-MM-DD HH:mm');
+    await this.mailService.sendTemplated({
+      template: 'order_cancel_request.html',
+      to: 'support@stayhopper.com',
+      subject: 'STAYHOPPER: Booking cancellation request',
+      text: 'Booking cancellation request',
+      replacements: {
+        USERNAME: `${guest.title}. ${guest.first_name} ${guest.last_name}`,
+        HOTEL_NAME: ub.property?.name,
+        BOOKID: ub.book_id,
+        DATE: date,
+        USER_MOBILE: guest.mobile,
+        BOOKED_PROPERTY: ub.property?.name,
+        BOOKED_PROPERTY_ADDRESS: ub.property?.contactinfo?.location,
+        BOOKED_PROPERTY_PHONE: ub.property?.contactinfo?.mobile,
+        STAY_DURATION: ub.stayDuration,
+        BOOKING_TYPE: cap(ub.bookingType),
+        BOOKED_ROOM_TYPES: this.roomTypes(ub.room, 'room'),
+        BOOKED_DATE: date,
+        HOTEL_CONTACT_NUMBER: ub.property?.contactinfo?.mobile,
+        HOTEL_EMAIL: ub.property?.contactinfo?.email,
+        CURRENT_YEAR: String(new Date().getFullYear()),
+      },
+    });
+    return { message: 'Booking Cancellation Request sent successfully!' };
+  }
+
+  async remove(id: string) {
+    const ub: any = await this.loadActive(id);
+    if (!ub) return { error: true };
+
+    await this.bookingModel.updateMany({}, { $pull: { slots: { userbooking: id } } });
+    await this.bookingLogModel.deleteMany({ userbooking: id });
+    await this.userBookingModel.updateOne({ _id: id }, { $set: { cancel_approval: 1 } });
+
+    const guest = ub.guestinfo || {};
+    const date = moment(`${ub.checkin_date} ${ub.checkin_time}`).format('dddd YYYY-MM-DD hh:mm A');
+    await this.mailService.sendTemplated({
+      template: 'order_cancelled.html',
+      to: guest.email,
+      bcc: ['noreply@stayhopper.com'],
+      subject: 'STAYHOPPER: Booking cancellation request',
+      text: 'Booking cancellation request',
+      replacements: {
+        USER_NAME: `${guest.title}. ${guest.first_name} ${guest.last_name}`,
+        HOTEL_NAME: ub.property?.name,
+        BOOK_ID: ub.book_id,
+        DATE: date,
+        ADDRESS: ub.property?.contactinfo?.location,
+        HOTEL_PHONE: ub.property?.contactinfo?.mobile,
+        STAY_DURATION: ub.stayDuration,
+        BOOKING_TYPE: cap(ub.bookingType),
+        ROOM_TYPE: this.roomTypes(ub.room, 'room'),
+        CURRENT_YEAR: String(new Date().getFullYear()),
+      },
+    });
+    return { message: 'Booking deleted successfully!' };
+  }
+
+  async rejectCancellation(id: string) {
+    const ub: any = await this.loadActive(id);
+    if (!ub) return { error: true };
+    await this.userBookingModel.updateOne({ _id: id }, { $set: { cancel_approval: 2 } });
+
+    const primary = ub.property?.primaryReservationEmail;
+    if (primary) {
+      const guest = ub.guestinfo || {};
+      const date = moment(`${ub.checkin_date} ${ub.checkin_time}`).format('dddd YYYY-MM-DD hh:mm A');
+      const secondary = ub.property?.secondaryReservationEmails;
+      const bcc = ['noreply@stayhopper.com'];
+      if (secondary && secondary.length) secondary.split(',').forEach((e: string) => bcc.push(e.trim()));
+      await this.mailService.sendTemplated({
+        template: 'order_cancel_request_rejected.html',
+        to: primary,
+        bcc,
+        subject: 'STAYHOPPER: booking cancellation request rejected!',
+        text: 'Your booking cancellation request has been rejected',
+        replacements: {
+          GUEST_NAME: `${guest.title}. ${guest.first_name} ${guest.last_name}`,
+          HOTEL_NAME: ub.property?.name,
+          BOOK_ID: ub.book_id,
+          DATE: date,
+          GUEST_PHONE: guest.mobile,
+          PROPERTY_NAME: ub.property?.name,
+          PROPERTY_ADDRESS: ub.property?.contactinfo?.location,
+          PROPERTY_PHONE: ub.property?.contactinfo?.mobile,
+          STAY_DURATION: ub.stayDuration,
+          BOOKING_TYPE: cap(ub.bookingType),
+          PROPERTY_ROOMS: this.roomTypes(ub.room, 'room'),
+          CURRENT_YEAR: String(new Date().getFullYear()),
+        },
+      });
+    }
+    return { message: 'Cancellation request rejected by admin' };
+  }
+
+  async noShow(id: string) {
+    const cb: any = await this.completedModel.findOne({ _id: id }).lean().exec();
+    if (!cb) return { error: true };
+    await this.completedModel.updateOne({ _id: id }, { $set: { noshow_request: 1 } });
+
+    const guest = cb.guestInfo || {};
+    const info = cb.propertyInfo || {};
+    const date = moment(`${cb.checkin_date} ${cb.checkin_time}`).format('dddd YYYY-MM-DD HH:mm');
+    await this.mailService.sendTemplated({
+      template: 'order_noshow_request.html',
+      to: 'support@stayhopper.com',
+      subject: 'STAYHOPPER: Booking Noshow request',
+      text: 'Booking Noshow request',
+      replacements: {
+        USERNAME: `${guest.title}. ${guest.first_name} ${guest.last_name}`,
+        HOTEL_NAME: info.name,
+        BOOKID: cb.book_id,
+        DATE: date,
+        USER_MOBILE: guest.mobile || '',
+        BOOKED_PROPERTY: info.name || '',
+        BOOKED_PROPERTY_ADDRESS: info.location,
+        BOOKED_PROPERTY_PHONE: info.mobile || '',
+        STAY_DURATION: cb.stayDuration,
+        BOOKING_TYPE: cap(cb.bookingType),
+        BOOKED_ROOM_TYPES: this.roomTypes(cb.roomsInfo, 'info'),
+        BOOKED_DATE: date,
+        HOTEL_CONTACT_NUMBER: info.mobile || '',
+        HOTEL_EMAIL: info.email || '',
+        CURRENT_YEAR: String(new Date().getFullYear()),
+      },
+    });
+    return { message: 'Booking No show Request sent successfully!' };
+  }
+
+  async rejectNoShow(id: string) {
+    const cb: any = await this.completedModel.findOne({ _id: id }).lean().exec();
+    if (!cb) return { error: true };
+    await this.completedModel.updateOne({ _id: id }, { $set: { nowshow_approval: 2 } });
+
+    const info = cb.propertyInfo || {};
+    if (info.primaryReservationEmail) {
+      const guest = cb.guestInfo || {};
+      const date = moment(`${cb.checkin_date} ${cb.checkin_time}`).format('dddd YYYY-MM-DD hh:mm A');
+      const bcc = ['noreply@stayhopper.com'];
+      if (info.secondaryReservationEmails && info.secondaryReservationEmails.length) {
+        info.secondaryReservationEmails.split(',').forEach((e: string) => bcc.push(e.trim()));
+      }
+      await this.mailService.sendTemplated({
+        template: 'order_noshow_request_rejected.html',
+        to: info.primaryReservationEmail,
+        bcc,
+        subject: 'STAYHOPPER: booking cancellation request rejected!',
+        text: 'Your booking cancellation request has been rejected',
+        replacements: {
+          GUEST_NAME: `${guest.title}. ${guest.first_name} ${guest.last_name}`,
+          HOTEL_NAME: info.name,
+          BOOK_ID: cb.book_id,
+          DATE: date,
+          GUEST_PHONE: '',
+          PROPERTY_NAME: info.name || '',
+          PROPERTY_ADDRESS: info.location,
+          PROPERTY_PHONE: info.mobile || '',
+          STAY_DURATION: cb.stayDuration,
+          BOOKING_TYPE: cap(cb.bookingType),
+          PROPERTY_ROOMS: this.roomTypes(cb.roomsInfo, 'info'),
+          CURRENT_YEAR: String(new Date().getFullYear()),
+        },
+      });
+    }
+    return { message: 'Cancellation request rejected by admin' };
+  }
+
+  async approveNoShow(id: string) {
+    const cb: any = await this.completedModel.findOne({ _id: id }).lean().exec();
+    if (!cb) return { error: true };
+
+    await this.bookingModel.updateMany({}, { $pull: { slots: { userbooking: id } } });
+    await this.bookingLogModel.deleteMany({ userbooking: id });
+    await this.completedModel.updateOne({ _id: id }, { $set: { nowshow_approval: 1 } });
+
+    const guest = cb.guestInfo || {};
+    const info = cb.propertyInfo || {};
+    const date = moment(`${cb.checkin_date} ${cb.checkin_time}`).format('dddd YYYY-MM-DD hh:mm A');
+    await this.mailService.sendTemplated({
+      template: 'order_noshow.html',
+      to: 'support@stayhopper.com',
+      bcc: ['noreply@stayhopper.com'],
+      subject: 'STAYHOPPER: Booking Noshow request',
+      text: 'Booking cancellation request',
+      replacements: {
+        USER_NAME: `${guest.title}. ${guest.first_name} ${guest.last_name}`,
+        HOTEL_NAME: info.name,
+        BOOK_ID: cb.book_id,
+        DATE: date,
+        ADDRESS: info.location,
+        HOTEL_PHONE: info.mobile || '',
+        STAY_DURATION: cb.stayDuration,
+        BOOKING_TYPE: cap(cb.bookingType),
+        ROOM_TYPE: this.roomTypes(cb.roomsInfo, 'info'),
+        CURRENT_YEAR: String(new Date().getFullYear()),
+      },
+    });
+    return { message: 'Booking deleted successfully!' };
+  }
+}
