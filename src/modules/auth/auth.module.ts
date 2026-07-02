@@ -27,7 +27,9 @@ import { Role, RoleSchema } from '../administrators/schemas/role.schema';
       inject: [ConfigService],
       useFactory: (config: ConfigService) => ({
         secret: config.get<string>('apiSecret'),
-        // No expiresIn — parity with legacy jwt.sign() (tokens never expired).
+        // Newly issued tokens now expire (legacy tokens never did). Configurable
+        // via JWT_EXPIRES_IN; defaults to 7d.
+        signOptions: { expiresIn: config.get<string>('jwtExpiresIn') },
       }),
     }),
   ],

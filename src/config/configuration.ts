@@ -7,6 +7,15 @@ export default () => {
   port: parseInt(process.env.PORT, 10) || 3008,
   globalPrefix: process.env.API_GLOBAL_PREFIX || 'admin/v2',
   apiSecret: process.env.API_SECRET,
+  // JWT lifetime for newly issued tokens (e.g. '7d', '12h'). Legacy tokens
+  // never expired; new logins now get a bounded lifetime.
+  jwtExpiresIn: process.env.JWT_EXPIRES_IN || '7d',
+  // CORS: comma-separated allowlist (e.g. "https://account.stayhopper.com,https://extranet.stayhopper.com").
+  // Empty => reflect the request origin (permissive but credential-safe).
+  corsOrigins: (process.env.CORS_ORIGINS || '')
+    .split(',')
+    .map((o) => o.trim())
+    .filter(Boolean),
   mongo: {
     url: process.env.MONGO_URL,
     username: process.env.MONGO_USERNAME,

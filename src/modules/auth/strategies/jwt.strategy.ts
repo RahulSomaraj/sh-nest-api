@@ -19,7 +19,9 @@ export class JwtStrategy extends PassportStrategy(Strategy, 'jwt-administrator')
   ) {
     super({
       jwtFromRequest: ExtractJwt.fromAuthHeaderAsBearerToken(),
-      ignoreExpiration: true,
+      // Enforce token expiry (legacy ignored it). Tokens signed before expiry
+      // was added have no `exp` claim and remain valid.
+      ignoreExpiration: false,
       secretOrKey: config.get<string>('apiSecret'),
     });
   }

@@ -1,5 +1,7 @@
 import { Module } from '@nestjs/common';
 import { ConfigModule } from '@nestjs/config';
+import { APP_GUARD } from '@nestjs/core';
+import { ThrottlerModule, ThrottlerGuard } from '@nestjs/throttler';
 import configuration from './config/configuration';
 import { DatabaseModule } from './database/database.module';
 import { AuthModule } from './modules/auth/auth.module';
@@ -24,6 +26,9 @@ import { PaymentsModule } from './modules/payments/payments.module';
       isGlobal: true,
       load: [configuration],
     }),
+    // Generous global rate limit — protects against abuse/brute-force without
+    // affecting normal admin usage. 300 requests / minute per client IP.
+    ThrottlerModule.forRoot([{ ttl: 60_000, limit: 300 }]),
     DatabaseModule,
     AuthModule,
     AdministratorsModule,
@@ -40,6 +45,10 @@ import { PaymentsModule } from './modules/payments/payments.module';
     InvoicesModule,
     DashboardModule,
     PaymentsModule,
+  ],
+  providers: [
+    // Apply the rate limiter to every route.
+    { provide: APP_GUARD, useClass: ThrottlerGuard },
   ],
 })
 export class AppModule {}
