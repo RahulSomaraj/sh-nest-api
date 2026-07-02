@@ -27,7 +27,9 @@ export class UserRatingsController {
   @Get()
   list(@Req() req: any, @Query() query: any) {
     const permissions: string[] = req.user?.role?.permissions || [];
-    const hasPropertiesAccess = permissions.indexOf('LIST_ALL_PROPERTIES') > -1;
+    const hasPropertiesAccess =
+      permissions.indexOf('*') > -1 ||
+      permissions.indexOf('LIST_ALL_PROPERTIES') > -1;
     return this.userRatingsService.list(query, hasPropertiesAccess);
   }
 

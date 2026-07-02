@@ -17,7 +17,8 @@ import { RequirePermissions } from '../../common/auth/permissions.decorator';
 
 const UserRatingLooseSchema = new Schema({}, { strict: false, collection: 'userratings' });
 
-const has = (permissions: string[], p: string) => permissions.indexOf(p) > -1;
+const has = (permissions: string[], p: string) =>
+  permissions.indexOf('*') > -1 || permissions.indexOf(p) > -1;
 
 /**
  * Port of stayhopper/admin/controllers/v2/dashboard.js -> /admin/v2/dashboard

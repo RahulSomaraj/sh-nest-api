@@ -28,7 +28,8 @@ const populations = [
   { path: 'payment.currency' },
 ];
 
-const has = (permissions: string[], p: string) => permissions.indexOf(p) > -1;
+const has = (permissions: string[], p: string) =>
+  permissions.indexOf('*') > -1 || permissions.indexOf(p) > -1;
 
 @Injectable()
 export class PropertiesService {

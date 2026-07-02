@@ -1,8 +1,9 @@
-import { Module } from '@nestjs/common';
+import { Module, MiddlewareConsumer, NestModule } from '@nestjs/common';
 import { ConfigModule } from '@nestjs/config';
 import { APP_GUARD } from '@nestjs/core';
 import { ThrottlerModule, ThrottlerGuard } from '@nestjs/throttler';
 import configuration from './config/configuration';
+import { HttpLoggerMiddleware } from './common/middleware/http-logger.middleware';
 import { DatabaseModule } from './database/database.module';
 import { AuthModule } from './modules/auth/auth.module';
 import { AdministratorsModule } from './modules/administrators/administrators.module';
@@ -51,4 +52,9 @@ import { PaymentsModule } from './modules/payments/payments.module';
     { provide: APP_GUARD, useClass: ThrottlerGuard },
   ],
 })
-export class AppModule {}
+export class AppModule implements NestModule {
+  configure(consumer: MiddlewareConsumer) {
+    // Log every incoming request (all methods, all paths).
+    consumer.apply(HttpLoggerMiddleware).forRoutes('*');
+  }
+}

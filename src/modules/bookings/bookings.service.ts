@@ -15,7 +15,8 @@ const activePopulations = [
   { path: 'property', populate: [{ path: 'contactinfo.country' }] },
 ];
 
-const has = (permissions: string[], p: string) => permissions.indexOf(p) > -1;
+const has = (permissions: string[], p: string) =>
+  permissions.indexOf('*') > -1 || permissions.indexOf(p) > -1;
 const cap = (s: string) => (s ? s.charAt(0).toUpperCase() + s.substring(1) : '');
 
 @Injectable()

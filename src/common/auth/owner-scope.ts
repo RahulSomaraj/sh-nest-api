@@ -38,7 +38,9 @@ export async function ownedPropertyIds(
   scope: OwnAllPermissions,
 ): Promise<Set<string> | null> {
   const permissions: string[] = user?.role?.permissions || [];
-  const hasAll = permissions.indexOf(scope.all) > -1;
+  // "*" is a wildcard granting every permission (e.g. Super Admin) → unrestricted.
+  const hasAll =
+    permissions.indexOf('*') > -1 || permissions.indexOf(scope.all) > -1;
   const hasOwn = permissions.indexOf(scope.own) > -1;
   if (hasAll || !hasOwn) return null;
   const props = await propertyModel

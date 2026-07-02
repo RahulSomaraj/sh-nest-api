@@ -23,7 +23,10 @@ export class PermissionsGuard implements CanActivate {
     const req = context.switchToHttp().getRequest();
     const role = req.user?.role;
     const permissions: string[] = (role && role.permissions) || [];
-    const ok = required.every((p) => permissions.indexOf(p) > -1);
+    // "*" is a wildcard granting every permission (e.g. Super Admin).
+    const ok =
+      permissions.indexOf('*') > -1 ||
+      required.every((p) => permissions.indexOf(p) > -1);
     if (!ok) {
       throw new ForbiddenException('Sorry, you do not have access to this resource');
     }
