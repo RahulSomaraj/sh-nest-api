@@ -18,8 +18,21 @@ export class CountriesCrudService extends BaseCrudService {
 
 @Injectable()
 export class CitiesCrudService extends BaseCrudService {
-  constructor(@InjectModel('cities') m: Model<any>) {
+  constructor(
+    @InjectModel('cities') m: Model<any>,
+    @InjectModel('countries') private readonly countriesModel: Model<any>,
+  ) {
     super(m, { moduleTitle: 'City', basePath: '/admin/v2/cities', populations: 'country', filters: ['country'] });
+  }
+
+  /** audit A16: v2 cities list uniquely added `countries` (sorted by name) to the
+   *  envelope for the FE country dropdown — restored here. */
+  async list(query: any) {
+    const [envelope, countries] = await Promise.all([
+      super.list(query),
+      this.countriesModel.find().sort({ country: 1 }).lean().exec(),
+    ]);
+    return { ...envelope, countries };
   }
 }
 

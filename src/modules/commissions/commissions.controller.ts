@@ -15,9 +15,10 @@ export class CommissionsController {
     return { commission: 2.6666666 };
   }
 
-  // Legacy returns HTTP 400 with { success: true } (a quirk preserved for parity).
+  // audit A30: v2 returned HTTP 400 with { success: true } — an evident bug (the stub
+  // "succeeds"). Corrected to 200; body unchanged. Flag to the frontend team at cutover.
   @UseGuards(JwtAuthGuard)
-  @HttpCode(400)
+  @HttpCode(200)
   @Put()
   edit() {
     return { success: true };

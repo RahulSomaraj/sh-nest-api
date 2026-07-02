@@ -1,4 +1,4 @@
-import { Injectable } from '@nestjs/common';
+import { BadRequestException, Injectable } from '@nestjs/common';
 import { InjectModel } from '@nestjs/mongoose';
 import { Model, Types } from 'mongoose';
 import { UserRating, UserRatingDocument } from './schemas/user-rating.schema';
@@ -44,8 +44,10 @@ export class UserRatingsService {
     const where: any = {};
     if (query.property) where.property = query.property;
     // Legacy applied approved only when the param was a non-empty string.
+    // audit A4: coerce the string to a real boolean ("false" would otherwise cast truthy);
+    // any other value is rejected.
     if (query.approved !== undefined && query.approved !== '') {
-      where.approved = query.approved;
+      where.approved = UserRatingsService.toBoolean(query.approved, 'approved');
     }
 
     const isPropertySort = query.orderBy === 'property';
@@ -148,10 +150,19 @@ export class UserRatingsService {
     }
   }
 
+  /** audit A4: strict boolean coercion for string query/path params. */
+  private static toBoolean(value: any, param: string): boolean {
+    if (value === true || value === 'true') return true;
+    if (value === false || value === 'false') return false;
+    throw new BadRequestException(`Invalid ${param} value; expected 'true' or 'false'`);
+  }
+
   /** PUT /user-ratings/:id/approval/:status */
   async approval(id: string, status: string) {
+    // audit A4: `:status` arrives as a string — coerce/validate before the Boolean write.
+    const approved = UserRatingsService.toBoolean(status, 'status');
     const resource: any = await this.userRatingModel
-      .findOneAndUpdate({ _id: id }, { $set: { approved: status } }, { new: true })
+      .findOneAndUpdate({ _id: id }, { $set: { approved } }, { new: true })
       .populate(resourcePopulations)
       .exec();
 

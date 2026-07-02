@@ -3,6 +3,11 @@ import { InjectModel } from '@nestjs/mongoose';
 import { Model } from 'mongoose';
 import moment from 'moment';
 import { MailService } from '../../common/mail/mail.service';
+import {
+  assertOwned,
+  ownedPropertyIds,
+  BOOKING_SCOPE,
+} from '../../common/auth/owner-scope';
 
 const activePopulations = [
   { path: 'user' },
@@ -176,11 +181,25 @@ export class BookingsService {
     };
   }
 
-  async single(id: string, status: string, permissions: string[]) {
+  /**
+   * audit A7: owner scoping for by-id booking operations — an own-scoped admin
+   * (LIST_OWN_BOOKINGS without LIST_ALL_BOOKINGS) may only act on bookings of their
+   * own properties. Active bookings reference `property`; completed use `propertyInfo.id`.
+   * Missing docs fall through so handlers keep their 404/error contracts.
+   */
+  private async assertBookingAccess(user: any, booking: any, active: boolean): Promise<void> {
+    if (!booking) return;
+    const owned = await ownedPropertyIds(user, this.propertyModel, BOOKING_SCOPE);
+    if (owned === null) return;
+    assertOwned(owned, active ? booking.property : booking.propertyInfo?.id);
+  }
+
+  async single(id: string, status: string, permissions: string[], user?: any) {
     const active = !status || status === 'active';
     const model = active ? this.userBookingModel : this.completedModel;
     let resource: any = await model.findOne({ _id: id }).lean().exec();
     if (!resource) return { notFound: true };
+    await this.assertBookingAccess(user, resource, active); // audit A7
 
     if (active) [resource] = await this.userBookingModel.populate([resource], activePopulations);
     else [resource] = await this.attachCompletedProperties([resource]);
@@ -211,15 +230,18 @@ export class BookingsService {
     return s.replace(/,\s*$/, '');
   }
 
-  async cancel(id: string) {
+  async cancel(id: string, user?: any) {
     const ub: any = await this.loadActive(id);
     if (!ub) return { error: true };
+    await this.assertBookingAccess(user, ub, true); // audit A7
     await this.userBookingModel.updateOne({ _id: id }, { $set: { cancel_request: 1 } });
 
     const guest = ub.guestinfo || {};
     const date = moment(`${ub.checkin_date} ${ub.checkin_time}`).format('dddd YYYY-MM-DD HH:mm');
     await this.mailService.sendTemplated({
       template: 'order_cancel_request.html',
+      // TODO(⚠️ PRODUCT — audit A7, decision 2026-07-02: keep for now): v2 "TESTING"
+      // recipient; production target (config.website_cancellation_email) still disabled.
       to: 'support@stayhopper.com',
       subject: 'STAYHOPPER: Booking cancellation request',
       text: 'Booking cancellation request',
@@ -244,9 +266,10 @@ export class BookingsService {
     return { message: 'Booking Cancellation Request sent successfully!' };
   }
 
-  async remove(id: string) {
+  async remove(id: string, user?: any) {
     const ub: any = await this.loadActive(id);
     if (!ub) return { error: true };
+    await this.assertBookingAccess(user, ub, true); // audit A7
 
     await this.bookingModel.updateMany({}, { $pull: { slots: { userbooking: id } } });
     await this.bookingLogModel.deleteMany({ userbooking: id });
@@ -276,11 +299,14 @@ export class BookingsService {
     return { message: 'Booking deleted successfully!' };
   }
 
-  async rejectCancellation(id: string) {
+  async rejectCancellation(id: string, user?: any) {
     const ub: any = await this.loadActive(id);
     if (!ub) return { error: true };
+    await this.assertBookingAccess(user, ub, true); // audit A7
     await this.userBookingModel.updateOne({ _id: id }, { $set: { cancel_approval: 2 } });
 
+    // audit A7: v2 had this `to:` commented out (bcc only) — product approved sending
+    // to the hotel on 2026-07-02; hotels start receiving rejection notices at cutover.
     const primary = ub.property?.primaryReservationEmail;
     if (primary) {
       const guest = ub.guestinfo || {};
@@ -313,9 +339,10 @@ export class BookingsService {
     return { message: 'Cancellation request rejected by admin' };
   }
 
-  async noShow(id: string) {
+  async noShow(id: string, user?: any) {
     const cb: any = await this.completedModel.findOne({ _id: id }).lean().exec();
     if (!cb) return { error: true };
+    await this.assertBookingAccess(user, cb, false); // audit A7
     await this.completedModel.updateOne({ _id: id }, { $set: { noshow_request: 1 } });
 
     const guest = cb.guestInfo || {};
@@ -323,6 +350,7 @@ export class BookingsService {
     const date = moment(`${cb.checkin_date} ${cb.checkin_time}`).format('dddd YYYY-MM-DD HH:mm');
     await this.mailService.sendTemplated({
       template: 'order_noshow_request.html',
+      // TODO(⚠️ PRODUCT — audit A7): v2 "TESTING" recipient, kept pending product decision.
       to: 'support@stayhopper.com',
       subject: 'STAYHOPPER: Booking Noshow request',
       text: 'Booking Noshow request',
@@ -347,11 +375,13 @@ export class BookingsService {
     return { message: 'Booking No show Request sent successfully!' };
   }
 
-  async rejectNoShow(id: string) {
+  async rejectNoShow(id: string, user?: any) {
     const cb: any = await this.completedModel.findOne({ _id: id }).lean().exec();
     if (!cb) return { error: true };
+    await this.assertBookingAccess(user, cb, false); // audit A7
     await this.completedModel.updateOne({ _id: id }, { $set: { nowshow_approval: 2 } });
 
+    // audit A7: as in rejectCancellation — product approved the real hotel recipient (2026-07-02).
     const info = cb.propertyInfo || {};
     if (info.primaryReservationEmail) {
       const guest = cb.guestInfo || {};
@@ -385,9 +415,10 @@ export class BookingsService {
     return { message: 'Cancellation request rejected by admin' };
   }
 
-  async approveNoShow(id: string) {
+  async approveNoShow(id: string, user?: any) {
     const cb: any = await this.completedModel.findOne({ _id: id }).lean().exec();
     if (!cb) return { error: true };
+    await this.assertBookingAccess(user, cb, false); // audit A7
 
     await this.bookingModel.updateMany({}, { $pull: { slots: { userbooking: id } } });
     await this.bookingLogModel.deleteMany({ userbooking: id });
@@ -398,6 +429,8 @@ export class BookingsService {
     const date = moment(`${cb.checkin_date} ${cb.checkin_time}`).format('dddd YYYY-MM-DD hh:mm A');
     await this.mailService.sendTemplated({
       template: 'order_noshow.html',
+      // TODO(⚠️ PRODUCT — audit A7): v2 "TESTING" recipient (guest email disabled in v2),
+      // kept pending product decision.
       to: 'support@stayhopper.com',
       bcc: ['noreply@stayhopper.com'],
       subject: 'STAYHOPPER: Booking Noshow request',

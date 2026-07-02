@@ -18,7 +18,7 @@ Porting the `admin/v2` surface one module at a time. Source of truth per module:
 | 8 | suggested-rates | `suggested-rates.js` | ✅ Done |
 | 9 | bookings | `bookings.js` | ✅ Done |
 | 10 | invoices | `invoices.js` | ✅ Done |
-| 11 | capture / return (payments) | `capturePayment.js`, `returnPayment.js` | ✅ Done (emails deferred) |
+| 11 | capture / return (payments) | `capturePayment.js`, `returnPayment.js` | ✅ Done (emails ported 2026-07-02, audit A8) |
 | 12 | dashboard | `dashboard.js` | ✅ Done |
 | 13 | lookups | `lookups.js` | ✅ Done |
 | 14 | offers | `offers.js` | ✅ Done (CRUD base) |
@@ -166,10 +166,10 @@ Porting the `admin/v2` surface one module at a time. Source of truth per module:
   Core money-movement + state transitions ported: booking guards (hotel_approved/
   hotel_cancelled/invoice), `paid`/`hotel_approved`/`hotel_cancelled` updates, external
   payment-container `/capture` `/return` `/vcc` calls (via `fetch`), VCC amount from property
-  charges, invoice paid/rejected + extranet redirect. **Deferred**: the guest/hotel
-  confirmation emails (captured/cancelled) live in a separate un-migrated subsystem
-  (`controllers/api/v2/email.js`, `emailHotel.js`) — marked with TODOs. No auth guard (legacy
-  parity; also gateway return URLs). Uses global `fetch` (Node 18+).
+  charges, invoice paid/rejected + extranet redirect. The guest/hotel confirmation &
+  cancellation emails (from `controllers/api/v2/email.js`, `emailHotel.js.js`) are ported
+  into `MailService` (audit A8, 2026-07-02) and fire after the container calls. No auth
+  guard (legacy parity; also gateway return URLs). Uses global `fetch` (Node 18+).
 
 ## Porting pattern (per module)
 1. **Read** `admin/controllers/v2/<module>.js` and its `db/models/*` model(s).

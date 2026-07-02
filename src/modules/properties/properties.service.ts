@@ -238,6 +238,18 @@ export class PropertiesService {
 
   /** Mirrors legacy preCreateOrUpdate: file wiring + defensive field normalisation. */
   private preCreateOrUpdate(resourceData: any, files: any, permissions: string[]) {
+    // audit A5 (mass assignment): system-computed field — never client-settable
+    // (recomputed by the user-ratings approval flow).
+    delete resourceData.user_rating;
+
+    // audit A5 (mass assignment): approval/publication flags may only be set by
+    // full-property admins; own-scoped admins' form posts have them stripped
+    // (strip ≠ reset — the stored value is left unchanged).
+    if (!has(permissions, 'LIST_ALL_PROPERTIES')) {
+      delete resourceData.approved;
+      delete resourceData.published;
+    }
+
     resourceData.trade_licence = resourceData.trade_licence || {};
     const tla = files?.['trade_licence[trade_licence_attachment]']?.[0];
     const pa = files?.['trade_licence[passport_attachment]']?.[0];

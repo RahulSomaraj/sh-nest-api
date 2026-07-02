@@ -73,6 +73,12 @@ export class RoomsService {
   }
 
   private preCreateOrUpdate(resourceData: any) {
+    // audit A6 (mass assignment): room-level suggestion state is service-managed
+    // (set exclusively by the modifyRate / suggested-rates flows) — strip it from
+    // create/modify bodies. Rate-level flags inside `rates` payloads are untouched.
+    delete resourceData.isExistPriceSuggestion;
+    delete resourceData.suggestedRatePercentage;
+
     if (!resourceData.extrabed_option) resourceData.extrabed_number = 0;
     return resourceData;
   }

@@ -21,7 +21,7 @@ import { MailService } from '../../common/mail/mail.service';
  * /admin/v2/return/:bookingId. Core payment state transitions + external payment-container
  * calls are ported. audit A8: the guest/hotel confirmation & cancellation emails from
  * controllers/api/v2/email.js + emailHotel.js(.js) are now ported into MailService
- * (sendCaptured*/sendCancelled*) and fired after the container /capture/ and /return/ calls.
+ * (sendCaptured* / sendCancelled* helpers) and fired after the container /capture/ and /return/ calls.
  * Legacy routes had no auth guard (also used as gateway return URLs); preserved here.
  */
 @Injectable()

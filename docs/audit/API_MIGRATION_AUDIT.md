@@ -25,14 +25,14 @@
 
 | # | Module | Legacy controller(s) | v2 controller | NestJS module | Status |
 |---|---|---|---|---|---|
-| A1 | auth | login.js, resetpassword.js | v2/auth.js | modules/auth | ❌ Nest REPRODUCES 2 security BLOCKERs (inactive-admin login, password-hash leak) + weak secret default; migrate-* correctly dropped |
-| A2 | administrators | hoteladmins.js | v2/administrators.js | modules/administrators | ⚠️ Nest FIXED broken authz (real guards); DELETE safety/cascade still dropped; onboarding brute-force + role/status mass-assign remain |
-| A3 | users | users.js | v2/users.js | modules/users | ⚠️ Nest FIXED authz + password mass-assign (DTO whitelist); unbounded bookings payload reproduced (now on GET & PUT) |
-| A4 | user-ratings | userreviews.js | v2/user-ratings.js | modules/user-ratings | ✅ Nest BEST version — fixes v2 heap regression + rating recompute; minor boolean-cast note |
-| A5 | properties | properties.js, photos.js, nearby.js | v2/properties.js | modules/properties | ✅ Nest faithful (11/11) + photo-resize improved; ⚠️ v2 IDOR on by-id ops (no owner scope) reproduced |
-| A6 | rooms | rooms.js, availability.js, pricing.js | v2/rooms.js | modules/rooms | ✅ Nest faithful (13/13) + fixes StrictPopulate, ObjectId-compare & photo resize; ⚠️ no owner scope (v2 parity) |
-| A7 | bookings | bookings.js, checkinout.js, completedbookings.js, cancelbookings.js | v2/bookings.js | modules/bookings | ⚠️ Nest faithful (8/8) + fixes heap & PII-crash; email-recipient divergence + no owner scope need product sign-off |
-| A8 | payments | payments.js | v2/invoices.js, v2/capturePayment.js, v2/returnPayment.js | modules/invoices, modules/payments | ⚠️ Nest faithful (8/8) + fixes 4 latent v2 bugs (incl. invoice data-leak); ❗ capture/return confirmation emails DEFERRED |
+| A1 | auth | login.js, resetpassword.js | v2/auth.js | modules/auth | ✅ (fixed 2026-07-02) inactive-admin rejected; minimal JWT claims + schema toJSON strips secrets; API_SECRET fail-fast |
+| A2 | administrators | hoteladmins.js | v2/administrators.js | modules/administrators | ✅ (fixed 2026-07-02) DELETE guard + cascade re-added; check_active_bookings re-exposed; onboarding brute-force still open (see findings) |
+| A3 | users | users.js | v2/users.js | modules/users | ✅ (fixed 2026-07-02) inlined booking arrays bounded to latest 100 each (totals still full-history) |
+| A4 | user-ratings | userreviews.js | v2/user-ratings.js | modules/user-ratings | ✅ (fixed 2026-07-02) approved/:status coerced to real booleans, invalid values → 400 |
+| A5 | properties | properties.js, photos.js, nearby.js | v2/properties.js | modules/properties | ✅ (fixed 2026-07-02) owner scoping on all by-id ops; delete cascade; approved/published/user_rating gated |
+| A6 | rooms | rooms.js, availability.js, pricing.js | v2/rooms.js | modules/rooms | ✅ (fixed 2026-07-02) owner scoping (list + by-id); delete guard + cleanup; suggestion flags stripped; rate-rejection trigger confirmed by product |
+| A7 | bookings | bookings.js, checkinout.js, completedbookings.js, cancelbookings.js | v2/bookings.js | modules/bookings | ✅ (fixed 2026-07-02) owner scoping on single + workflows; rejection-email recipient approved by product; test recipients kept (⚠️ TODO) |
+| A8 | payments | payments.js | v2/invoices.js, v2/capturePayment.js, v2/returnPayment.js | modules/invoices, modules/payments | ✅ (fixed 2026-07-02) capture/return guest+hotel emails ported into MailService; invoice write allowlist added |
 | A9 | dashboard | dashboard.js | v2/dashboard.js | modules/dashboard | ✅ Nest faithful (5/5), clean; scoping preserved |
 | A10 | promo-codes | promocode.js | v2/promo-codes.js | modules/crud (promo-codes) | ✅ CRUD-base (see batch) |
 | A11 | policies | policy.js, policies.js | v2/policies.js | modules/crud (policies) | ✅ CRUD-base (see batch) |
@@ -40,7 +40,7 @@
 | A13 | terms-and-conditions | terms_conditions.js | v2/terms-and-conditions.js | modules/crud | ✅ CRUD-base (see batch) |
 | A14 | faq | faq.js | v2/faq.js | modules/crud (faq) | ✅ CRUD-base (see batch) |
 | A15 | countries | countries.js | v2/countries.js | modules/crud (countries) | ✅ CRUD-base (see batch) |
-| A16 | cities | cities.js | v2/cities.js | modules/crud (cities) | ⚠️ CRUD-base — drops `countries` from list envelope (see batch) |
+| A16 | cities | cities.js | v2/cities.js | modules/crud (cities) | ✅ (fixed 2026-07-02) `countries` restored on the list envelope (CitiesCrudService.list override) |
 | A17 | currencies | currencies.js | v2/currencies.js | modules/crud (currencies) | ✅ CRUD-base (see batch) |
 | A18 | property-types | propertytypes.js | v2/property-types.js | modules/crud | ✅ CRUD-base (see batch) |
 | A19 | property-ratings | propertyratings.js | v2/property-ratings.js | modules/crud | ✅ CRUD-base (see batch) |
@@ -51,10 +51,10 @@
 | A24 | guest-numbers | no_guests.js | v2/guest-numbers.js | modules/crud | ✅ CRUD-base (see batch) |
 | A25 | services | services.js | v2/services.js | modules/crud (services) | ✅ CRUD-base (see batch) |
 | A26 | lookups / generalsettings | generalsettings.js | v2/lookups.js | modules/lookups | ✅ Nest faithful (roles lookup) |
-| A27 | taxes | taxes.js | *(none — dropped at v2)* | *(not in Nest)* | 🚫 DROPPED at v2 — verify with product |
-| A28 | notifications | notifications.js | *(none — dropped at v2)* | *(not in Nest)* | 🚫 DROPPED at v2 — verify with product |
+| A27 | taxes | taxes.js | *(none — dropped at v2)* | *(not in Nest)* | ✅ 🚫 retired — CONFIRMED by product 2026-07-02 (charges live per-property) |
+| A28 | notifications | notifications.js | *(none — dropped at v2)* | *(not in Nest)* | ✅ 🚫 retired — CONFIRMED by product 2026-07-02 (guest notifications C3 unaffected) |
 | A29 | offers | *(none — new)* | v2/offers.js | modules/crud (offers) | ✅ ➕ CRUD-base (see batch) |
-| A30 | commissions | *(none — new)* | v2/commissions.js | modules/commissions | ✅ ➕ Nest faithful (stub, incl. 400 quirk) |
+| A30 | commissions | *(none — new)* | v2/commissions.js | modules/commissions | ✅ ➕ (fixed 2026-07-02) PUT 400→200 (v2 bug corrected; body unchanged — flag to FE) |
 | A31 | suggested-rates | pricing.js (partial?) | v2/suggested-rates.js | modules/suggested-rates | ✅ Nest faithful + StrictPopulate/email improvements |
 | A32 | app-version | *(none — new)* | v2/app-version.js | modules/app-version | ✅ ➕ Nest faithful + auth hardening |
 
@@ -95,9 +95,9 @@
 **Files:** legacy `admin/controllers/login.js`, `admin/controllers/resetpassword.js` (session, model `db/models/admins`) → v2 `admin/controllers/v2/auth.js` (JWT + passport, model `db/models/administrators`) → NestJS `src/modules/auth/*`
 **NestJS verification (2026-07-02):** ❌ The two security BLOCKERs are **reproduced**, plus a weak-secret default. Files: `modules/auth/{auth.controller,auth.service}.ts`, `strategies/{local,jwt}.strategy.ts`, `config/configuration.ts`, `modules/administrators/schemas/administrator.schema.ts`.
 
-- ❌ **[BLOCKER — reproduced] Inactive-admin can still log in.** `AuthService.validateAdministrator` (auth.service.ts L25–36) does `findOne({email})` + `bcrypt.compare` only — no `status` check. `autoLogin` (L61–83) also omits it. Deactivated administrators authenticate successfully. **Fix:** reject `status === false` in both.
-- ❌ **[BLOCKER — reproduced] Password hash leaked in JWT + login response.** `validateAdministrator` selects `+password`; `signToken` signs `administrator.toJSON()` and `buildLoginResponse` returns `user: administrator`. `administrator.schema.ts` defines no `toJSON` transform, so the bcrypt hash rides in the (client-decodable) JWT payload and the response body. Same in `autoLogin`. **Fix:** add a schema `toJSON` transform deleting `password` (and ideally sign a minimal claim set, not the whole doc).
-- ❌ **[BLOCKER — reproduced] Weak JWT secret default.** `config/configuration.ts` L4: `apiSecret: process.env.API_SECRET || 'secret'`; `jwt.strategy.ts` uses it with `ignoreExpiration: true`. Missing env → forgeable, non-expiring tokens. **Fix:** fail fast if `API_SECRET` unset; add expiry.
+- ✅ **(fixed 2026-07-02) Inactive-admin login rejected.** `validateAdministrator` and `autoLogin` now reject `status === false` (null → 401 / `Invalid Login credentials`), matching legacy "Inactive User".
+- ✅ **(fixed 2026-07-02) Password hash no longer leaks.** `administrator.schema.ts` adds `toJSON`/`toObject` transforms deleting `password`/`activationCode`/`autoLoginCode`; `signToken` signs a minimal `{_id, email, role}` claim set. Login/auto-login/create/change-password responses and the JWT are hash-free.
+- ✅ **(fixed 2026-07-02) Weak JWT secret removed.** `configuration.ts` throws on boot when `API_SECRET` is unset (no `'secret'` fallback). Token expiry left off for legacy parity — `TODO(⚠️ PRODUCT)` in `signToken` (coordinate with frontend before enabling).
 - ⚠️ **[WARN — reproduced] Login by phone dropped** — `validateAdministrator` matches `email` only (legacy accepted phone OR email).
 - ⚠️ **[WARN — reproduced] Login-failure contract** — `LocalStrategy.validate` throws `UnauthorizedException` → `401`, not the legacy `200 {status:0,...}`.
 - ✅ **[FIXED] change-password privilege** — controller passes `req.user._id` (from JWT) to the service; a caller can only change their own password. `/migrate-*` routes correctly **omitted** (documented in the controller).
@@ -137,9 +137,9 @@
 **NestJS verification (2026-07-02):** ⚠️ The broken-authz BLOCKER is **fixed**; the DELETE-safety BLOCKER and the onboarding/mass-assign warnings **remain**. Files: `modules/administrators/{administrators.controller,administrators.service}.ts`, `dto/{create,update}-administrator.dto.ts`, `common/auth/permissions.guard.ts`, `main.ts`.
 
 - ✅ **[FIXED] Authorization now enforced.** Every write route carries `@UseGuards(JwtAuthGuard, PermissionsGuard)` + `@RequirePermissions('LIST_ADMINISTRATORS')`; `PermissionsGuard` **throws** `ForbiddenException` before the handler runs (permissions.guard.ts L27–29). The v2 "missing `return` after 401 → write still executes → `ERR_HTTP_HEADERS_SENT`" bug is gone.
-- ❌ **[BLOCKER — reproduced] DELETE still has no safety logic.** `AdministratorsService.remove` (administrators.service.ts L180–182) is just `deleteOne({_id})`. No active-booking guard, no cascade of properties/rooms/favourites. `check_active_bookings` remains unported. Deleting an admin still orphans their properties.
+- ✅ **(fixed 2026-07-02) DELETE guard + cascade re-added.** `remove` blocks (400 `{status:0,message,count}`) when any owned property has a booking with `date_checkin >= now`; otherwise cascades: users' `favourites` pull, availability `bookings`/`bookinglogs` cleanup, rooms, properties, then the admin. `POST /administrators/check_active_bookings` re-exposed (legacy `{status:1,count}` contract).
 - ⚠️ **[WARN — reproduced] Write ops gated by a read permission.** create/modify/remove all require `LIST_ADMINISTRATORS` — no granular manage permission.
-- ⚠️ **[WARN — partially fixed] Mass assignment.** Global `ValidationPipe({whitelist:true})` (main.ts) + `UpdateAdministratorDto` (PartialType of `CreateAdministratorDto`) strip unknown fields, so `password` **cannot** be mass-assigned (not in the DTO) — good. **But** `status` and `role` **are** in the DTO, so any `LIST_ADMINISTRATORS` holder can set another admin's `role`/`status` via `PUT /:id` (privilege-escalation surface). Email uniqueness still not re-checked (`findOneAndUpdate` bypasses the unique validator → generic error on collision).
+- ⚠️ **[WARN — accepted 2026-07-02] Mass assignment.** Global `ValidationPipe({whitelist:true})` (main.ts) + `UpdateAdministratorDto` strip unknown fields, so `password` **cannot** be mass-assigned. `status` and `role` **stay in the DTO by design** — the admin edit UI legitimately sends both (status is the disable toggle, role the roles dropdown); the residual "any `LIST_ADMINISTRATORS` holder can change roles" surface is a permission-granularity issue (needs a MANAGE_ADMINISTRATORS permission + FE work), tracked, not a code defect. Email uniqueness still not re-checked (`findOneAndUpdate` bypasses the unique validator → generic error on collision).
 - ⚠️ **[WARN — reproduced] Public onboarding brute-force.** `/onboarding` + `/onboarding/verify` are unguarded (matches legacy); `activationCode`/`autoLoginCode` are still `Math.floor(random*9000)+1000` (4 digits), no rate limiting, and `messageCode:'emailExists'` enables enumeration. Combined with A1 `/auto-login`, the takeover path is intact.
 - ℹ️ **[INFO] create response leaks the hashed password** — `create` returns the in-memory saved doc where `password` was set; with no schema `toJSON` transform the hash is in the body (same root cause as A1). list/getById use `.lean()` + `select('+email')` only, so they don't leak.
 - ✅ **[INFO] Improvements preserved** — JSON responses, keyword/role search + sort, property back-refs, bcrypt on create, `MailService` templating.
@@ -181,7 +181,7 @@
 
 - ✅ **[FIXED] Authorization enforced.** `@UseGuards(JwtAuthGuard, PermissionsGuard)` + `@RequirePermissions('LIST_USERS')` are declared **class-level** on `UsersController` (applies to GET/PUT/DELETE); the guard throws before the handler. v2 missing-`return` bug gone.
 - ✅ **[FIXED] Plaintext-password mass assignment.** `UpdateUserDto` does **not** include `password`, and the global `whitelist:true` pipe strips it — a `password` in the PUT body is dropped, so it can no longer be written unhashed. (`status`, `favourites`, `email` are intentionally whitelisted and editable; email uniqueness still not re-checked.)
-- ❌ **[BLOCKER — reproduced, wider] Unbounded booking arrays.** `getExtraUserInformation` (users.service.ts L118–167) still does `userBookingModel.find({user})` **and** `completedBookingModel.find({user})` with no limit and inlines both arrays. It runs on **`GET /:id` and `PUT /:id`** now, so the heavy payload appears on edits too. **Fix:** return only the computed `amount`/`count`, or paginate the arrays.
+- ✅ **(fixed 2026-07-02) Booking arrays bounded.** `getExtraUserInformation` now inlines only the latest 100 active + 100 completed bookings (sorted `_id` desc); the aggregate `amount`/`count` still cover the full history. Applies to both `GET /:id` and `PUT /:id`.
 - ⚠️ **[WARN — reproduced] No dedicated enable/disable.** Status is changed only via `PUT /:id` (`status:number` is in the DTO). Functional, but the legacy `POST /status/:id` toggle has no direct equivalent.
 - ✅ **[INFO] List aggregation preserved** — single `$lookup` pipeline (no N+1); `POST` create correctly not ported (matches disabled v2 route); `DELETE` verb correct. No cascade cleanup of the user's bookings/favourites (pre-existing gap).
 
@@ -234,7 +234,7 @@
 - ✅ **[FIXED] Heap regression.** `list` paginates at the DB (`skip/limit/lean`); the one case the DB can't sort natively — `orderBy=property` (populated field) — is handled with an `$lookup` + `$sort` + `$skip/$limit` aggregation, so only **one page** is materialised. This is better than both v2 (load-all) and legacy.
 - ✅ **[IMPROVED] Rating recompute** — `updatePropertyRating` uses `updateOne({$set:{user_rating}})` instead of legacy/v2 load-mutate-`save()`, and guards `count > 0`. Added `{property, approved}` index for the hot filter/aggregation path.
 - ✅ **[FIXED] `approved` filter guard** — `if (query.approved !== undefined && query.approved !== '')` closes the v2 `undefined` case.
-- ⚠️ **[WARN — reproduced] Boolean cast of string state.** Both the `approved` list filter and `approval(:status)` write pass the raw string (`"true"`/`"false"`) into a Boolean path (`$set:{approved: status}`). Mongoose's cast of the string `"false"` is version-dependent and can resolve truthy — validate/coerce to a real boolean (`status === 'true'`) and reject other values. Low severity but worth hardening.
+- ✅ **(fixed 2026-07-02) Boolean cast hardened.** `approved` filter and `approval(:status)` are coerced via a strict `toBoolean` (`'true'`/`'false'` only); anything else → 400 `BadRequestException`.
 - ℹ️ **[INFO]** No DTO needed (params only); response is JSON (was EJS). Endpoint set matches v2 exactly.
 
 **Nest verdict:** ✅ ship-quality. The only nit is coercing the `approved`/`:status` string to a real boolean.
@@ -263,9 +263,9 @@
 
 **Findings:**
 
-- ⚠️ **[WARN — v2 gap reproduced in Nest] IDOR on by-id operations.** Owner scoping (`LIST_OWN_PROPERTIES` without `LIST_ALL_PROPERTIES` → restrict to `administrator == me` OR `me ∈ allAdministrators`) is applied only in `list` and `hasAgreementSigned`. `single`, `modify`, `remove`, and all nearby/photo mutations query by `{_id}` alone. Since Hotel-Admin/Receptionist roles hold `LIST_PROPERTIES`, such a user can **read, edit, delete, and re-photo any property by id**, not just their own. Present in v2 (`single/modify/remove` use bare `where={_id}`) and **reproduced** in the Nest service. Fix: apply the same owner-scope `$or` to by-id reads/writes when the caller lacks `LIST_ALL_PROPERTIES`.
-- ⚠️ **[WARN — v2 parity] Mass assignment on create/modify.** Both accept the raw body (`@Body() any`, deliberately bypassing the whitelist pipe to preserve the large nested payload). `approved`, `published`, `user_rating`, etc. can be set directly. `preCreateOrUpdate` does strip `agreement.commission*` when the caller lacks `MANAGE_AGREEMENT` (parity kept), but nothing else is gated. Consider a typed DTO or explicit field guard for the sensitive flags.
-- ⚠️ **[WARN — v2 parity] DELETE has no cascade.** `remove` is a bare `deleteOne` — the property's rooms/availability/bookings are left orphaned. Matches v2 (not a Nest regression), but worth a cleanup pass.
+- ✅ **(fixed 2026-07-02) IDOR on by-id operations closed.** Shared helper `common/auth/owner-scope.ts` resolves the caller's property ids once (same `hasOwn && !hasAll` rule as `list`) and 403s on mismatch; applied to `single`, `modify`, `remove` and all nearby/photo mutations (controller passes `req.user` through). Full-access admins unaffected.
+- ✅ **(fixed 2026-07-02) Sensitive flags gated.** `preCreateOrUpdate` now always strips `user_rating` (system-computed) and strips `approved`/`published` unless the caller has `LIST_ALL_PROPERTIES` (strip ≠ reset). Large nested payload otherwise preserved (no DTO, deliberate).
+- ✅ **(fixed 2026-07-02) DELETE guard + cascade.** `remove` blocks (400) on active bookings, then cleans rooms, availability `bookings`/`bookinglogs`, and users' `favourites` before `deleteOne`.
 - ✅ **[FIXED/IMPROVED] Photo resize.** v2 re-fetched the just-uploaded file over HTTP (`request(config.api_url + path).pipe(sharp().resize(800)…)`) — fragile and dependent on `api_url`. Nest resizes the uploaded original directly: `sharp(file.path).resize(800).toFile('public/files/properties/…')`. Same result, no network round-trip, original preserved in `public/files/original/properties` (dirs auto-created). Callback-style error handling replaced with async/await.
 - ✅ **[FIXED] approved/published filter.** v2's `if (approved || approved === false)` never matched the string `"false"`; Nest explicitly handles `'true'`/`'false'`, so the publish/approval filters actually work.
 - ✅ **[INFO] No missing-`return` bug here.** Unlike A2/A3, v2 properties used a boolean-guard pattern (`if (hasPermissions(req,res)) { … }`), so unauthorized calls didn't fall through. Nest uses real guards. Authz-crash class of bug not present in either.
@@ -301,13 +301,13 @@
 **Findings:**
 
 - ✅ **[FIXED] `StrictPopulateError`.** Legacy/v2 populated both `property_id` **and** a bogus `property` path that isn't on the rooms schema. Under Mongoose 8 that throws — Nest drops the invalid `property` path from `populations`/`singlePopulations`. Without this the whole rooms module would 500.
-- ✅ **[FIXED] Latent ObjectId-comparison bug in `modifyRate`.** v2 gated the "rejected your suggestion" email on `resource.property_id.administrator._id !== req.user._id` — a reference comparison of two ObjectId instances, which is **always true**, so v2 effectively mailed the owner on every suggestion-clear regardless of who did it. Nest compares `String(...) !== String(userId)`, so the mail fires only when a *different* user rejects. ⚠️ **Behavioural divergence** (Nest is correct, but the notification pattern differs from production v2) — flag for product sign-off.
+- ✅ **[FIXED] Latent ObjectId-comparison bug in `modifyRate`.** v2 gated the "rejected your suggestion" email on `resource.property_id.administrator._id !== req.user._id` — a reference comparison of two ObjectId instances, which is **always true**, so v2 effectively mailed the owner on every suggestion-clear regardless of who did it. Nest compares `String(...) !== String(userId)`, so the mail fires only when a *different* user rejects. ✅ **Product signed off on the corrected behaviour 2026-07-02.**
 - ✅ **[IMPROVED] Rate-suggestion emails refactored.** v2 inlined `fs.readFileSync` + a ~200-line manual 24-hour red-diff table build for both the request and rejection templates. Nest moves this into `MailService.sendRateSuggestionRequest` / `sendRateSuggestionRejected`, reproducing the hourly weekday/weekend diff highlighting. Same output, far more maintainable. (Verify the template token set matches once, as it's now in one place.)
 - ✅ **[IMPROVED] Photo resize** — same fix as A5: `sharp(file.path).resize(800)` directly instead of v2's `request(config.api_url + path).pipe(...)` HTTP refetch. Originals in `public/files/original/rooms`, resized in `public/files/rooms`.
 - ✅ **[FAITHFUL] Availability engine.** `getSlotRanges` timezone handling (moment-timezone, UAE/India/Vietnam zone selection) is preserved; `changeAvailability` keeps the batched `insertMany`/`deleteMany` for booking-logs (one write per action, not per slot) and replaces the `underscore` filters with native array ops. Block/unblock branch logic matches v2 line-for-line.
-- ⚠️ **[WARN — v2 parity] No owner scoping anywhere.** Rooms only checks `LIST_ROOMS`; neither `list` (filters by `propertyId` only) nor the by-id read/write routes restrict a Hotel-Admin to their own property's rooms. Same IDOR class as A5, but here **not even list is scoped**. Pre-existing in v2 — not a Nest regression, but the whole rooms surface is cross-tenant readable/writable by any `LIST_ROOMS` holder.
-- ⚠️ **[WARN — v2 parity] Mass assignment on create/modify/rates.** Raw `@Body() any` (deliberate, to preserve nested rate payloads). `isExistPriceSuggestion`, `suggestedRatePercentage`, `rates`, `images` can all be set directly. No DTO/whitelist.
-- ⚠️ **[WARN — v2 parity] DELETE has no cascade.** `remove` is a bare `deleteOne`; the room's `bookings`/`slots`/`bookinglogs` are left orphaned. (Per `MIGRATION.md`, `bookings`/`slots`/`bookinglogs` are owned by RoomsModule until the bookings module lands — revisit cascade then.)
+- ✅ **(fixed 2026-07-02) Owner scoping added everywhere.** Rooms have no own/all permission pair, so scope keys on the caller's property scope (`LIST_OWN_PROPERTIES` without `LIST_ALL_PROPERTIES`): `list` filters to owned properties (explicit `propertyId` filter must itself be owned), and every by-id op (`single/modify/remove/rates/availability/photos`) + `create` asserts the room's `property_id` is owned, else 403.
+- ✅ **(fixed 2026-07-02) Room-level suggestion flags stripped.** `preCreateOrUpdate` deletes `isExistPriceSuggestion`/`suggestedRatePercentage` from create/modify bodies (service-managed via the rate flows). `rates`/`images` payloads intentionally preserved.
+- ✅ **(fixed 2026-07-02) DELETE guard + cleanup.** `remove` blocks (400, legacy message) while any `userbookings` doc references the room, then deletes the room's availability `bookings`/`bookinglogs` and `$pull`s it from `property.rooms` (legacy v1 semantics).
 
 **Nest verdict:** ✅ the best implementation of a hard module — it fixes two bugs that would break or misbehave under the new stack (StrictPopulate, ObjectId compare) and cleans up the email/photo paths. Open items are all v2-parity: owner scoping, mass assignment, delete cascade. Confirm the changed rate-rejection email trigger is acceptable to product.
 
@@ -338,9 +338,9 @@
 - ✅ **[FAITHFUL] `hotelFinalAmount`.** Charges filtered to exclude `tourism_fee`, summed as a percentage of `hotelAmt`, with the same `hotelAmt<=0 → 0` guard. Active reads use `property.charges`; completed use `propertyInfo.id.charges`.
 - ✅ **[IMPROVED] Persistence + cleanup.** Flag changes use `updateOne({$set})` instead of load-mutate-`save()` (no full-doc re-cast); slot cleanup uses `updateMany({}, {$pull:{slots:{userbooking:id}}})` and `bookinglogs.deleteMany({userbooking:id})` — matches v2 semantics on Mongoose 8. Completed bookings' `propertyInfo.id` is joined manually (embedded doc, not a ref) to avoid `StrictPopulateError`.
 - ✅ **[IMPROVED] Emails via `MailService.sendTemplated`** (global token replacement) instead of six inline `fs.readFileSync` + `.replace()` blocks.
-- ⚠️ **[WARN — behavioural divergence] Rejection emails now have a real `to:` recipient.** In v2 `rejectCancellation` and `noShowRejectCancel`, the `to:` line was **commented out** — only `bcc: [noreply@stayhopper.com]` was active, so the property owner was never actually emailed on rejection. Nest sends `to: primaryReservationEmail`. This is likely the *intended* behaviour, but it **differs from production v2** — confirm with product before cutover (owners will suddenly start receiving rejection emails).
-- ⚠️ **[WARN — v2 parity, must finalise] Test recipients hard-coded.** `cancel`, `noShow`, and `approveNoShow` still send `to: 'support@stayhopper.com'` (the v2 "TESTING" recipient); the production targets (`config.website_cancellation_email`, guest email, etc.) were commented out in v2 and remain so. `remove` correctly mails the guest (that line was active in v2). The disabled real recipients must be wired up before go-live — this is faithful to v2 but v2 itself was in a test state.
-- ⚠️ **[WARN — v2 parity] No owner scoping on workflow endpoints or `single`.** `cancel/remove/reject-cancellation/noshow/reject-noshow/approveNoShow` all operate by `{_id}` with no check that the booking belongs to the caller's property; `single`'s owner check was commented out in v2 and remains absent (masking still applies). A `LIST_OWN_BOOKINGS` admin can cancel/delete/no-show **any** booking by id (IDOR). Reproduced from v2. `list` is also gated by JWT only (not `LIST_BOOKINGS`) — v2 had that permission check commented out too.
+- ✅ **(resolved 2026-07-02 — product sign-off) Rejection emails keep the real `to:` recipient.** Product approved sending `to: primaryReservationEmail` (v2 had the line commented out); hotels start receiving rejection notices at cutover. Sign-off recorded in code comments.
+- ⚠️→✅ **(decision 2026-07-02: keep + TODO) Test recipients stay for now.** Product chose to keep `support@stayhopper.com` on `cancel`/`noShow`/`approveNoShow` pending confirmation of the real addresses; each site carries `TODO(⚠️ PRODUCT — audit A7)`. Must be revisited before go-live.
+- ✅ **(fixed 2026-07-02) Owner scoping on `single` + all six workflow endpoints.** `assertBookingAccess` (via `common/auth/owner-scope.ts`, `LIST_OWN_BOOKINGS` without `LIST_ALL_BOOKINGS`) checks active bookings' `property` / completed bookings' `propertyInfo.id` against the caller's owned properties, else 403. `list` remains JWT-only (v2 parity, unchanged).
 - ℹ️ **[INFO] Import style.** `bookings.service.ts` uses `import moment from 'moment'` (default) whereas `rooms.service.ts` uses `import * as moment from 'moment-timezone'`. Fine only if `esModuleInterop`/`allowSyntheticDefaultImports` is on — worth a one-line tsconfig check (a build would catch it).
 
 **Nest verdict:** ⚠️ solid, faithful migration of a delicate module — the heap and PII-crash fixes are genuine improvements and the money math + masking are preserved exactly. Before cutover, product/security must decide on: (1) the rejection-email recipient change, (2) finishing the disabled production email recipients, and (3) whether to add owner scoping to the by-id workflow operations. None are Nest-introduced logic errors, but this is the module where they matter most.
@@ -366,7 +366,7 @@
 
 **Findings:**
 
-- ❗ **[BLOCKER — feature gap, documented] Payment confirmation/cancellation emails not sent.** v2 `capture` sent `capturedPaymentEmail` (guest) + `capturedHotelEmail` (hotel); `return` sent `cancelledPaymentEmail` + `cancelledHotelEmail`. In Nest these are `// TODO` stubs — the underlying subsystem (`controllers/api/v2/email.js`, `emailHotel.js`) isn't migrated yet. Money movement and booking-state transitions are faithful, but **guests/hotels currently receive no payment or cancellation email**. Must migrate that subsystem (or bridge to `MailService`) before cutover. Flagged in `MIGRATION.md`.
+- ✅ **(fixed 2026-07-02) Payment confirmation/cancellation emails ported.** The four v2 senders (`capturedPaymentEmail`/`capturedHotelEmail`/`cancelledPaymentEmail`/`cancelledHotelEmail` from `controllers/api/v2/email.js` + `emailHotel.js.js`) now live in `MailService` (sendTemplated pattern) and fire after the container `/capture/` and `/return/` calls, without blocking the money flow. Recipients/bcc match the v2 **active** lines; two ⚠️ PRODUCT items kept as TODOs per product decision (2026-07-02): the commented-out `b2cbookings@` bcc stays off, and the hotel-cancellation email keeps v2's guest recipient (suspected v2 copy-paste bug). Two v2 crashes not carried: the non-hourly VATS `ReferenceError` in return, and `NaN` from missing `commissionHourly` (defaults to 0).
 - ✅ **[FIXED — security] Invoice `single` owner-scope was a data leak in v2.** v2's forbidden-invoice check did `res.status(401).send(...)` **without `return`**, so execution continued and the invoice was **still sent** (plus an `ERR_HTTP_HEADERS_SENT`). Nest throws `ForbiddenException`, so an own-scoped admin genuinely cannot read another property's invoice. Real fix.
 - ✅ **[FIXED] Heap in invoice `list`.** v2 loaded the entire filtered invoice set and `splice()`d; Nest paginates at the DB (load-all only for the `orderBy=property` case).
 - ✅ **[FIXED] `returnPayment.js` missing `config` import.** v2 `returnPayment.js` referenced `config.extranet_url` / `config.payment_website_url` but never imported `config` — the `invoice_id` and catch paths would throw `ReferenceError`. Nest uses injected `ConfigService`. (capturePayment.js did import it.)
@@ -374,7 +374,7 @@
 - ✅ **[FIXED] Undefined `platform` in catch blocks.** Both v2 capture/return `catch` referenced an undefined `platform` variable (`if (platform === 'web')`) → a second error inside the handler. Nest logs via `Logger` and returns a clean `{status:0}`/null.
 - ✅ **[FAITHFUL] VCC amount + state transitions.** `capture` sets `paid=1, hotel_approved=1`, computes `vccAmount = hotelAmt + Σ(non-tourism charges on hotelAmt)`, calls the payment-container `/capture/` then `/vcc/`, stores `ub.vcc`. `return` sets `paid=0, hotel_cancelled=1` and calls `/return/`. Guards (`!ub || hotel_approved` etc., `invoice_id → handleHotelPayment`) preserved. State writes use `updateOne` instead of load-save. Uses global `fetch` (Node 18+) instead of `request`/`curl-request`.
 - ✅ **[FAITHFUL] No auth on capture/return** — legacy parity (these are payment-gateway return URLs). Correct to keep unguarded.
-- ⚠️ **[WARN — v2 parity] Writes gated by `LIST_INVOICES` (a read permission)** and invoice create/modify accept raw `@Body() any` (mass assignment — `status`, `amount`, `paid` settable directly). Same class as A2/A5/A6.
+- ⚠️→✅ **(fixed 2026-07-02, partially) Invoice writes now use an explicit field allowlist** (`InvoicesService.WRITABLE_FIELDS`, mirrors the schema/v2 body usage) on create/modify — arbitrary fields are dropped. The `LIST_INVOICES` read-permission gating remains (v2 parity; permission-granularity issue, not code).
 - ⚠️ **[WARN — v2 parity] Neither version validates the payment-container response.** Only network errors are caught; a container-reported capture failure still proceeds (booking marked paid). Pre-existing risk worth hardening in the money path.
 
 **Nest verdict:** ⚠️ the money-movement logic is faithfully ported and actually **safer** than v2 (four real bugs fixed, including an invoice data-leak). The single hard blocker for cutover is wiring up the deferred capture/return confirmation & cancellation emails; secondary items are the mass-assignment/permission gaps and (in both versions) the lack of payment-container response validation.
@@ -440,7 +440,7 @@
 - ✅ **[FAITHFUL] Pagination + envelope.** Unlike bookings/invoices/user-ratings, the v2 CRUD template already paginated at the DB (`skip/limit/lean`) — Nest keeps that (no heap issue to fix here). List envelope `{list,itemCount,pageCount,pages,active_page}`, `single` 404 message (`"<Title> does not exist"`), and create/modify populate-after-save all match.
 - ✅ **[FAITHFUL] Image upload.** v2 accepted `.array("image")` and set `resourceData.image = req.files[0].path`. Nest wires `FilesInterceptor('image')` + `applyImage()` doing the same. Per-resource upload dirs differ in v2 (e.g. `public/img/countries`, `public/img/cities`) but the migration uses one shared `crudImageUpload` dir — cosmetic, image URL still stored on the record.
 - ✅ **[FAITHFUL] cities filter.** `country` query filter + `country` populate preserved.
-- ⚠️ **[WARN — divergence] `cities` list drops the `countries` array.** v2 `cities` list uniquely added `countries: Country.find().sort({country:1})` to its response envelope (for the FE country dropdown). `BaseCrudService.list` has no per-resource envelope extension, so the Nest `cities` response omits `countries`. If the sh-account cities screen reads `data.countries`, its dropdown will be empty. **Fix:** override `list` for cities (or add an `extraEnvelope` hook). This is the only behavioural gap in the batch.
+- ✅ **(fixed 2026-07-02) `cities` list restores the `countries` array.** `CitiesCrudService` overrides `list` and appends `countries: Country.find().sort({country:1})` to the envelope, matching v2. Was the only behavioural gap in the batch.
 - ⚠️ **[WARN — v2 parity] Mass assignment.** Bodies are raw `@Body() any` (whitelist bypassed by design). Any field is settable on these settings records. Low risk (settings data, `SHOW_SETTINGS`-gated), same pattern as elsewhere.
 - ℹ️ **[INFO — verify] Collection-name mapping.** Correctness hinges on `ReferenceModelsModule` binding each model to the **legacy collection name** (e.g. `promocodes`, `termsandconditions`, `room_types`). Per `MIGRATION.md` this is intentional and consistent; worth one runtime smoke-test per collection that a legacy record loads.
 - ℹ️ **[INFO] FE path aliases** `property-policies → policies` and `property-terms → terms` are handled at the routing/alias layer (noted in `MIGRATION.md`), not inside these controllers.
@@ -459,19 +459,19 @@
 ### A27 — taxes  🚫 not migrated
 
 **Verdict:** 🚫 **Dropped at the v2 stage** — legacy `admin/controllers/taxes.js` exists but is **not mounted** in `admin/routes/web.js` (v2), and there is no Nest module. So this was retired before the NestJS migration, not by it.
-**Action:** confirm with product that admin tax management is intentionally gone (charges are now modelled per-property under `property.charges`, per A5/A7 — taxes/VAT/tourism-fee live there). If a standalone tax CRUD is still needed, it must be built fresh.
+**Action:** ✅ **CONFIRMED retired by product 2026-07-02.** Charges are modelled per-property under `property.charges` (A5/A7). No code change.
 
 ### A28 — notifications  🚫 not migrated
 
 **Verdict:** 🚫 **Dropped at the v2 stage** — legacy `admin/controllers/notifications.js` is not mounted in v2 `web.js`, and there is no Nest module.
-**Action:** confirm with product whether admin push/notification management is still required. If so, it needs to be re-specified and built (no v2 reference to port from). Note: guest-facing notifications (`controllers/api/notifications.js`, item C3) are separate and still active.
+**Action:** ✅ **CONFIRMED retired by product 2026-07-02.** Guest-facing notifications (`controllers/api/notifications.js`, item C3) are separate and still active. No code change.
 
 ### A30 — commissions ➕
 
 **Audited:** 2026-07-02 | **Verdict:** ✅ Faithful port of a **stub**. 2/2 endpoints.
 **Files:** v2 `admin/controllers/v2/commissions.js` → NestJS `modules/commissions/commissions.controller.ts`.
 
-- `GET /commissions` → `{ commission: 2.6666666 }` (hardcoded in both). `PUT /commissions` → **HTTP 400** `{ success: true }` — an odd status code that v2 returns; Nest preserves it via `@HttpCode(400)` for parity. Both guarded with `JwtAuthGuard`.
+- `GET /commissions` → `{ commission: 2.6666666 }` (hardcoded in both). `PUT /commissions` → ✅ **(fixed 2026-07-02)** now returns **HTTP 200** `{ success: true }` (the v2 400 was an evident bug; body unchanged — flagged to the frontend team). Both guarded with `JwtAuthGuard`.
 - ℹ️ **[INFO] It's a stub in v2 too** — there's no real commission persistence. The genuine commission logic lives in `property.agreement.commissionHourly/Monthly` (A5) and the `config.commission` defaults. If this endpoint is meant to do something, it's unimplemented in both stacks — not a migration gap. Consider fixing the `PUT` 400→200 while touching it.
 
 ### A31 — suggested-rates
@@ -495,7 +495,7 @@
 **Files:** v2 `admin/controllers/v2/app-version.js` → NestJS `modules/app-version/app-version.module.ts`.
 
 - `GET /app-version` → `{success, data:{android, ios}}` (first row per `appType`); `PUT /app-version` → update the row matched by `appType` (strips `_id`). Logic matches v2.
-- ✅ **[FIXED/hardened] Auth added.** The v2 `app-version` routes had **no auth guard at all**; Nest adds `JwtAuthGuard`. ⚠️ Behavioural change (previously public) — fine for an admin-panel endpoint, but confirm no unauthenticated client (e.g. the mobile app checking for updates) calls this admin route. If the mobile app reads it unauthenticated, keep a public read or expose it via the guest API.
+- ✅ **[FIXED/hardened] Auth added.** The v2 `app-version` routes had **no auth guard at all**; Nest adds `JwtAuthGuard`. ✅ **(verified 2026-07-02)** the mobile app reads versions via the guest API (`controllers/api/v2/main.js`, module B5) — the admin route is panel-only, so the guard is safe. No public read needed on the admin surface.
 - ✅ **[FIXED] Schema `appType`.** The legacy model omitted the `appType` field it queries on; Nest's schema declares it (`strict:false`) so existing docs load and `PUT` persists.
 - ✅ **[INFO] `catch` bug not carried.** v2 `GET`'s catch referenced an undefined `e` (`catch(err){ ... e.message }`); Nest's error handling is clean.
 
@@ -505,16 +505,20 @@
 
 All 32 admin modules audited. Headline: the NestJS port is **functionally faithful and frequently safer than v2** — it fixed ~10 latent v2 bugs (StrictPopulate, missing-`return` authz holes, an invoice data-leak, ObjectId comparison, undefined `platform`/`config`/`e`, PII-mask crash, and multiple heap/load-all regressions). The systemic gaps it **inherited** from v2 are what need decisions before cutover.
 
-### Consolidated must-fix before cutover
+### Consolidated must-fix before cutover — Fix status (2026-07-02)
 
-1. **[BLOCKER] Auth-login security (A1).** Inactive-admin login still allowed; password hash leaked in JWT + login/create responses (no `toJSON` transform); `API_SECRET` defaults to `'secret'` with no token expiry.
-2. **[BLOCKER] Payment emails deferred (A8).** Capture/return guest+hotel confirmation & cancellation emails are `// TODO` — migrate `email.js`/`emailHotel.js` (or bridge to `MailService`).
-3. **[BLOCKER] Destructive deletes without cascade (A2, A6).** Deleting an administrator/room/property orphans child records; A2 also dropped the active-booking guard.
-4. **[HIGH] Owner-scoping IDOR on by-id routes (A5, A6, A7).** `single`/`modify`/`remove` + booking workflows query by `_id` only — an own-scoped admin can act on other tenants' data.
-5. **[HIGH] Booking email decisions (A7).** Rejection emails now actually send to owners (v2 had `to:` commented); cancel/no-show still use hard-coded `support@stayhopper.com` test recipients.
-6. **[MEDIUM] Mass assignment.** Most write endpoints take raw `@Body() any` (approved/published/status/role/paid/amount settable). Add DTic whitelists on the sensitive ones.
-7. **[LOW] `cities` list drops `countries` array (A16); commissions `PUT` returns 400; app-version now requires auth (A32); rooms rate-rejection email trigger changed (A6).**
-8. **[VERIFY] Dropped modules — taxes (A27) & notifications (A28)** retired at the v2 stage; confirm intended.
+| # | Finding | Fix status | Note |
+|---|---|---|---|
+| 1 | **[BLOCKER] Auth-login security (A1)** | ✅ fixed | Inactive-admin rejected; minimal JWT claims + schema transform strip secrets; `API_SECRET` fail-fast. Token expiry deferred (⚠️ PRODUCT TODO). |
+| 2 | **[BLOCKER] Payment emails deferred (A8)** | ✅ fixed | Four v2 senders ported into `MailService`, fired after `/capture/`+`/return/`; two recipient TODOs kept per product decision. |
+| 3 | **[BLOCKER] Destructive deletes (A2, A5, A6)** | ✅ fixed | Active-booking guards (400) + cascades (favourites/rooms/properties/availability docs); `check_active_bookings` re-exposed. |
+| 4 | **[HIGH] Owner-scoping IDOR (A5, A6, A7)** | ✅ fixed | Shared `common/auth/owner-scope.ts` applied to all by-id ops (+ rooms list/create). |
+| 5 | **[HIGH] Booking email decisions (A7)** | ✅ resolved (product, 2026-07-02) | Rejection → hotel recipient approved; test recipients kept with `TODO(⚠️ PRODUCT)` — revisit before go-live. |
+| 6 | **[MEDIUM] Mass assignment** | ✅ fixed (scoped) | Properties `user_rating`+`approved`/`published` gated; rooms suggestion flags stripped; invoices field allowlist; admins/users already DTO'd (`role`/`status` kept by design — see A2). CRUD-base left raw (low risk, documented). |
+| 7 | **[LOW] Small parity items** | ✅ fixed | A16 `countries` restored; A30 PUT 400→200 (flag FE); A32 verified (mobile uses guest API); A4 boolean coercion; A3 booking arrays bounded to 100. |
+| 8 | **[VERIFY] Dropped modules (A27, A28)** | ✅ confirmed retired (product, 2026-07-02) | No code change. |
+
+**Still open (tracked, non-blocking):** A2 onboarding brute-force (4-digit codes, no rate limit) + read-permission-gated writes (granularity); payment-container response validation (A8, pre-existing in both stacks); token expiry (A1, ⚠️ PRODUCT); A7 test recipients (⚠️ PRODUCT TODO).
 
 ### Still outstanding (not admin)
 - **B1–B10** — guest/public API (`controllers/api/v2|v3/*`): users, properties, bookings, payment, main, ratings, favourites, v3 endpoints. **Not yet audited** — and note the deferred payment-email subsystem (A8) lives here.

@@ -113,8 +113,42 @@ export class InvoicesService {
     return resource;
   }
 
+  // audit A8 (mass assignment): explicit allowlist of invoice fields the admin
+  // invoicing screen legitimately manages (mirrors the schema / v2 body usage).
+  private static readonly WRITABLE_FIELDS = [
+    'invoiceNo',
+    'invoiceForDate',
+    'invoiceForMonthString',
+    'issueDate',
+    'status',
+    'datepayed',
+    'property',
+    'completedBookings',
+    'userBookings',
+    'totalBookingsCount',
+    'invoiceSentToProperty',
+    'invoiceSentToPropertyDate',
+    'reminderSentToProperty',
+    'reminderSentToPropertyDate',
+    'paymentUrl',
+    'currency',
+    'amountToProperty',
+    'amountFromProperty',
+    'commissionHourly',
+    'commissionMonthly',
+    'amount',
+  ];
+
+  private pickWritable(data: any): any {
+    const out: any = {};
+    for (const k of InvoicesService.WRITABLE_FIELDS) {
+      if (data && Object.prototype.hasOwnProperty.call(data, k)) out[k] = data[k];
+    }
+    return out;
+  }
+
   async create(data: any) {
-    const resource = new this.invoiceModel(data);
+    const resource = new this.invoiceModel(this.pickWritable(data)); // audit A8
     await resource.save();
     await this.invoiceModel.populate(resource, populations);
     return resource;
@@ -123,6 +157,7 @@ export class InvoicesService {
   async modify(id: string, data: any) {
     const resource: any = await this.invoiceModel.findOne({ _id: id });
     if (!resource) return null;
+    data = this.pickWritable(data); // audit A8
     Object.keys(data).forEach((k) => (resource[k] = data[k]));
     await resource.save();
     await this.invoiceModel.populate(resource, populations);

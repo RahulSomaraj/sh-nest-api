@@ -36,9 +36,10 @@ export class BookingsController {
     return this.bookingsService.list(query, req.user, this.perms(req));
   }
 
+  // audit A7: req.user passed through so the service can owner-scope by-id workflows.
   @Post('cancel')
-  async cancel(@Body('id') id: string) {
-    const r = await this.bookingsService.cancel(id);
+  async cancel(@Req() req: any, @Body('id') id: string) {
+    const r = await this.bookingsService.cancel(id, req.user);
     if ((r as any).error) {
       throw new HttpException({ message: 'Could not cancel booking' }, HttpStatus.INTERNAL_SERVER_ERROR);
     }
@@ -46,13 +47,13 @@ export class BookingsController {
   }
 
   @Post('reject-cancellation/:id')
-  reject(@Param('id') id: string) {
-    return this.bookingsService.rejectCancellation(id);
+  reject(@Req() req: any, @Param('id') id: string) {
+    return this.bookingsService.rejectCancellation(id, req.user);
   }
 
   @Post('noshow')
-  async noShow(@Body('id') id: string) {
-    const r = await this.bookingsService.noShow(id);
+  async noShow(@Req() req: any, @Body('id') id: string) {
+    const r = await this.bookingsService.noShow(id, req.user);
     if ((r as any).error) {
       throw new HttpException({ message: 'Could not Noshow booking' }, HttpStatus.INTERNAL_SERVER_ERROR);
     }
@@ -60,14 +61,14 @@ export class BookingsController {
   }
 
   @Post('reject-noshow/:id')
-  rejectNoShow(@Param('id') id: string) {
-    return this.bookingsService.rejectNoShow(id);
+  rejectNoShow(@Req() req: any, @Param('id') id: string) {
+    return this.bookingsService.rejectNoShow(id, req.user);
   }
 
   // Declared before ':id' so the literal segment wins.
   @Delete('noshow/:id')
-  async approveNoShow(@Param('id') id: string) {
-    const r = await this.bookingsService.approveNoShow(id);
+  async approveNoShow(@Req() req: any, @Param('id') id: string) {
+    const r = await this.bookingsService.approveNoShow(id, req.user);
     if ((r as any).error) {
       throw new HttpException({ message: 'Booking could not be deleted!' }, HttpStatus.INTERNAL_SERVER_ERROR);
     }
@@ -75,8 +76,8 @@ export class BookingsController {
   }
 
   @Delete(':id')
-  async remove(@Param('id') id: string) {
-    const r = await this.bookingsService.remove(id);
+  async remove(@Req() req: any, @Param('id') id: string) {
+    const r = await this.bookingsService.remove(id, req.user);
     if ((r as any).error) {
       throw new HttpException({ message: 'Booking could not be deleted!' }, HttpStatus.INTERNAL_SERVER_ERROR);
     }
@@ -87,7 +88,7 @@ export class BookingsController {
   @RequirePermissions('LIST_BOOKINGS')
   @Get(':id/:status')
   async single(@Req() req: any, @Param('id') id: string, @Param('status') status: string) {
-    const resource = await this.bookingsService.single(id, status, this.perms(req));
+    const resource = await this.bookingsService.single(id, status, this.perms(req), req.user);
     if ((resource as any).notFound) {
       throw new HttpException({ message: 'Bookings does not exist' }, HttpStatus.NOT_FOUND);
     }

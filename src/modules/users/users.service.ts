@@ -138,8 +138,11 @@ export class UsersService {
           },
         },
       ]),
-      this.userBookingModel.find({ user: userId }),
-      this.completedBookingModel.find({ user: userId }),
+      // audit A3: v2 inlined the user's ENTIRE booking history (unbounded heap/payload
+      // growth). Bound the inlined arrays to the latest 100 each; the aggregate
+      // totals/counts above still cover the full history.
+      this.userBookingModel.find({ user: userId }).sort({ _id: -1 }).limit(100),
+      this.completedBookingModel.find({ user: userId }).sort({ _id: -1 }).limit(100),
     ]);
 
     let totalBookingAmt = 0;
