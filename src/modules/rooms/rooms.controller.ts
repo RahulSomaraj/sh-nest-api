@@ -33,14 +33,15 @@ import { roomPhotosUpload } from './upload.config';
 export class RoomsController {
   constructor(private readonly roomsService: RoomsService) {}
 
+  // audit A6: req.user passed through so the service can owner-scope list + by-id operations.
   @Get()
-  list(@Query() query: any) {
-    return this.roomsService.list(query);
+  list(@Req() req: any, @Query() query: any) {
+    return this.roomsService.list(query, req.user);
   }
 
   @Get(':id')
-  async single(@Param('id') id: string) {
-    const resource = await this.roomsService.single(id);
+  async single(@Req() req: any, @Param('id') id: string) {
+    const resource = await this.roomsService.single(id, req.user);
     if ((resource as any).notFound) {
       throw new HttpException({ message: 'Room does not exist' }, HttpStatus.NOT_FOUND);
     }
@@ -49,14 +50,14 @@ export class RoomsController {
 
   @Post()
   @UseInterceptors(FilesInterceptor('file', 10, roomPhotosUpload))
-  create(@Body() body: any) {
-    return this.roomsService.create(body);
+  create(@Req() req: any, @Body() body: any) {
+    return this.roomsService.create(body, req.user);
   }
 
   @Put(':id')
   @UseInterceptors(FilesInterceptor('file', 10, roomPhotosUpload))
-  async modify(@Param('id') id: string, @Body() body: any) {
-    const resource = await this.roomsService.modify(id, body);
+  async modify(@Req() req: any, @Param('id') id: string, @Body() body: any) {
+    const resource = await this.roomsService.modify(id, body, req.user);
     if (!resource) {
       throw new HttpException({ message: 'Sorry, resource does not exist' }, HttpStatus.NOT_FOUND);
     }
@@ -64,15 +65,15 @@ export class RoomsController {
   }
 
   @Delete(':id')
-  remove(@Param('id') id: string) {
-    return this.roomsService.remove(id);
+  remove(@Req() req: any, @Param('id') id: string) {
+    return this.roomsService.remove(id, req.user);
   }
 
   // ---- Rates ----
   @Post(':id/rates')
   @UseInterceptors(FilesInterceptor('file', 10, roomPhotosUpload))
-  async createRate(@Param('id') id: string, @Body() body: any) {
-    const rate = await this.roomsService.createRate(id, body);
+  async createRate(@Req() req: any, @Param('id') id: string, @Body() body: any) {
+    const rate = await this.roomsService.createRate(id, body, req.user);
     if (!rate) {
       throw new HttpException({ message: 'Sorry, resource does not exist' }, HttpStatus.NOT_FOUND);
     }
@@ -87,7 +88,7 @@ export class RoomsController {
     @Param('rateId') rateId: string,
     @Body() body: any,
   ) {
-    const rate = await this.roomsService.modifyRate(id, rateId, req.user._id.toString(), body);
+    const rate = await this.roomsService.modifyRate(id, rateId, req.user._id.toString(), body, req.user);
     if (!rate) {
       throw new HttpException({ message: 'Sorry, resource does not exist' }, HttpStatus.NOT_FOUND);
     }
@@ -95,8 +96,8 @@ export class RoomsController {
   }
 
   @Delete(':id/rates/:rateId')
-  async removeRate(@Param('id') id: string, @Param('rateId') rateId: string) {
-    const resource = await this.roomsService.removeRate(id, rateId);
+  async removeRate(@Req() req: any, @Param('id') id: string, @Param('rateId') rateId: string) {
+    const resource = await this.roomsService.removeRate(id, rateId, req.user);
     if (!resource) {
       throw new HttpException({ message: 'Sorry, resource does not exist' }, HttpStatus.NOT_FOUND);
     }
@@ -105,8 +106,8 @@ export class RoomsController {
 
   // ---- Availability ----
   @Get(':id/availability')
-  async listAvailability(@Param('id') id: string, @Query('date') date: string) {
-    const result = await this.roomsService.listAvailability(id, date);
+  async listAvailability(@Req() req: any, @Param('id') id: string, @Query('date') date: string) {
+    const result = await this.roomsService.listAvailability(id, date, req.user);
     if ((result as any).notFound) {
       throw new HttpException({ message: 'Room does not exist' }, HttpStatus.NOT_FOUND);
     }
@@ -114,15 +115,15 @@ export class RoomsController {
   }
 
   @Post(':id/availability/:action')
-  changeAvailability(@Param('action') action: string, @Body() body: any) {
-    return this.roomsService.changeAvailability(action, body);
+  changeAvailability(@Req() req: any, @Param('action') action: string, @Body() body: any) {
+    return this.roomsService.changeAvailability(action, body, req.user);
   }
 
   // ---- Photos ----
   @Post(':id/photos')
   @UseInterceptors(FilesInterceptor('file', 10, roomPhotosUpload))
-  async createPhoto(@Param('id') id: string, @UploadedFiles() files: any[]) {
-    const result = await this.roomsService.createPhoto(id, files?.[0]);
+  async createPhoto(@Req() req: any, @Param('id') id: string, @UploadedFiles() files: any[]) {
+    const result = await this.roomsService.createPhoto(id, files?.[0], req.user);
     if ((result as any).notFound) {
       throw new HttpException({ message: 'Sorry, resource does not exist' }, HttpStatus.NOT_FOUND);
     }
@@ -130,13 +131,13 @@ export class RoomsController {
   }
 
   @Post(':id/photos/feature')
-  featurePhoto(@Param('id') id: string, @Body('image') image: string) {
-    return this.roomsService.featurePhoto(id, image);
+  featurePhoto(@Req() req: any, @Param('id') id: string, @Body('image') image: string) {
+    return this.roomsService.featurePhoto(id, image, req.user);
   }
 
   @Post(':id/photos/remove')
-  async removePhoto(@Param('id') id: string, @Body('image') image: string) {
-    const result = await this.roomsService.removePhoto(id, image);
+  async removePhoto(@Req() req: any, @Param('id') id: string, @Body('image') image: string) {
+    const result = await this.roomsService.removePhoto(id, image, req.user);
     if ((result as any).notFound) {
       throw new HttpException({ message: 'Resource does not exist' }, HttpStatus.NOT_FOUND);
     }

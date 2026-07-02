@@ -1,10 +1,15 @@
-import { Injectable } from '@nestjs/common';
+import { HttpException, HttpStatus, Injectable } from '@nestjs/common';
 import { InjectModel } from '@nestjs/mongoose';
 import { Model } from 'mongoose';
 import { basename } from 'path';
 import sharp from 'sharp';
 import moment from 'moment-timezone';
 import { MailService } from '../../common/mail/mail.service';
+import {
+  assertOwned,
+  ownedPropertyIds,
+  PROPERTY_SCOPE,
+} from '../../common/auth/owner-scope';
 
 // 'property' (legacy) is NOT a path on the rooms schema — populating it throws
 // StrictPopulateError under Mongoose 8, so it is intentionally dropped here.
@@ -49,6 +54,9 @@ export class RoomsService {
     @InjectModel('slots') private readonly slotModel: Model<any>,
     @InjectModel('bookings') private readonly bookingModel: Model<any>,
     @InjectModel('bookinglogs') private readonly bookingLogModel: Model<any>,
+    // audit A6: delete guard + cleanup.
+    @InjectModel('userbookings') private readonly userBookingModel: Model<any>,
+    @InjectModel('properties') private readonly propertyModel: Model<any>,
     private readonly mailService: MailService,
   ) {}
 
@@ -69,7 +77,26 @@ export class RoomsService {
     return resourceData;
   }
 
-  async list(query: any, basePath = '/admin/v2/rooms') {
+  /**
+   * audit A6: owner scoping. Rooms have no own/all permission pair of their own, so scope
+   * follows the caller's property scope (LIST_OWN_PROPERTIES without LIST_ALL_PROPERTIES).
+   * Returns null when unrestricted.
+   */
+  private async ownedIds(user: any): Promise<Set<string> | null> {
+    return ownedPropertyIds(user, this.propertyModel, PROPERTY_SCOPE);
+  }
+
+  /** audit A6: 403 unless the room's property belongs to the caller. Missing rooms fall
+   *  through so handlers keep their existing 404 contract. */
+  private async assertRoomAccess(user: any, roomId: string): Promise<void> {
+    const owned = await this.ownedIds(user);
+    if (owned === null) return;
+    const room: any = await this.roomModel.findOne({ _id: roomId }).select('property_id').lean();
+    if (!room) return;
+    assertOwned(owned, room.property_id);
+  }
+
+  async list(query: any, user?: any, basePath = '/admin/v2/rooms') {
     const limit = Math.min(parseInt(query.limit, 10) || 10, 100);
     const activePage = parseInt(query.page, 10) || 1;
     const skip = (activePage - 1) * limit;
@@ -77,6 +104,17 @@ export class RoomsService {
     const where: any = {};
     if (query.propertyId) where.property_id = query.propertyId;
     if (query.property) where.property_id = query.property;
+
+    // audit A6: own-scoped admins only see rooms of their own properties.
+    const owned = await this.ownedIds(user);
+    if (owned !== null) {
+      if (where.property_id) {
+        // Explicit property filter must itself be owned.
+        assertOwned(owned, where.property_id);
+      } else {
+        where.property_id = { $in: [...owned] };
+      }
+    }
 
     let sort: any = { _id: 1 };
     if (query.order && query.orderBy) {
@@ -99,12 +137,16 @@ export class RoomsService {
     };
   }
 
-  async single(id: string) {
+  async single(id: string, user?: any) {
+    await this.assertRoomAccess(user, id); // audit A6
     const resource = await this.roomModel.findOne({ _id: id }).populate(singlePopulations).lean().exec();
     return resource || { notFound: true };
   }
 
-  async create(resourceData: any) {
+  async create(resourceData: any, user?: any) {
+    // audit A6: own-scoped admins can only create rooms under their own properties.
+    const owned = await this.ownedIds(user);
+    if (owned !== null) assertOwned(owned, resourceData.property_id);
     resourceData = this.preCreateOrUpdate(resourceData);
     const resource = new this.roomModel(resourceData);
     await resource.save();
@@ -112,7 +154,8 @@ export class RoomsService {
     return resource;
   }
 
-  async modify(id: string, resourceData: any) {
+  async modify(id: string, resourceData: any, user?: any) {
+    await this.assertRoomAccess(user, id); // audit A6
     resourceData = this.preCreateOrUpdate(resourceData);
     const resource: any = await this.roomModel.findOne({ _id: id });
     if (!resource) return null;
@@ -124,12 +167,31 @@ export class RoomsService {
     return resource;
   }
 
-  async remove(id: string) {
+  async remove(id: string, user?: any) {
+    await this.assertRoomAccess(user, id); // audit A6
+    // audit A6: legacy rooms POST /delete guard + cleanup, re-added.
+    // Block deletion while user bookings reference the room (legacy checked any
+    // userbookings doc — that collection only holds current/upcoming bookings).
+    const referencingBookings = await this.userBookingModel.countDocuments({ 'room.room': id });
+    if (referencingBookings) {
+      throw new HttpException(
+        { status: 0, message: 'Room have active bookings, Could not delete now' },
+        HttpStatus.BAD_REQUEST,
+      );
+    }
+    const room: any = await this.roomModel.findOne({ _id: id }).select('property_id').lean();
+    if (room) {
+      // Clean dependent availability docs + logs, and detach from the property (legacy $pull).
+      await this.bookingModel.deleteMany({ room: room._id });
+      await this.bookingLogModel.deleteMany({ room: room._id });
+      await this.propertyModel.updateOne({ _id: room.property_id }, { $pull: { rooms: room._id } });
+    }
     return this.roomModel.deleteOne({ _id: id }).exec();
   }
 
   // ---- Rates ----
-  async createRate(id: string, resourceData: any) {
+  async createRate(id: string, resourceData: any, user?: any) {
+    await this.assertRoomAccess(user, id); // audit A6
     const resource: any = await this.roomModel.findOne({ _id: id });
     if (!resource) return null;
     const rate = resource.rates.create(resourceData);
@@ -151,7 +213,8 @@ export class RoomsService {
     }
   }
 
-  async modifyRate(id: string, rateId: string, userId: string, resourceData: any) {
+  async modifyRate(id: string, rateId: string, userId: string, resourceData: any, user?: any) {
+    await this.assertRoomAccess(user, id); // audit A6
     const resource: any = await this.roomModel
       .findOne({ _id: id, 'rates._id': rateId })
       .populate(singlePopulations);
@@ -207,7 +270,8 @@ export class RoomsService {
     return resource.rates.id(rateId);
   }
 
-  async removeRate(id: string, rateId: string) {
+  async removeRate(id: string, rateId: string, user?: any) {
+    await this.assertRoomAccess(user, id); // audit A6
     const resource: any = await this.roomModel.findOne({ _id: id, 'rates._id': rateId });
     if (!resource) return null;
     resource.rates.pull(rateId);
@@ -251,7 +315,8 @@ export class RoomsService {
     return ranges;
   }
 
-  async listAvailability(id: string, date: string) {
+  async listAvailability(id: string, date: string, user?: any) {
+    await this.assertRoomAccess(user, id); // audit A6
     const resource: any = await this.roomModel.findOne({ _id: id }).populate(singlePopulations).lean().exec();
     if (!resource) return { notFound: true };
 
@@ -294,8 +359,9 @@ export class RoomsService {
     return { list, slots };
   }
 
-  async changeAvailability(action: string, body: any) {
+  async changeAvailability(action: string, body: any, user?: any) {
     const { room: roomId, dates, slotIds, nos } = body;
+    await this.assertRoomAccess(user, roomId); // audit A6
 
     const [room, slots] = await Promise.all([
       this.roomModel.findOne({ _id: roomId }),
@@ -403,7 +469,8 @@ export class RoomsService {
   }
 
   // ---- Photos ----
-  async createPhoto(id: string, file: any) {
+  async createPhoto(id: string, file: any, user?: any) {
+    await this.assertRoomAccess(user, id); // audit A6
     const resource: any = await this.roomModel.findOne({ _id: id });
     if (!resource || !file) return { notFound: true };
     const filename = basename(file.path);
@@ -414,7 +481,8 @@ export class RoomsService {
     return { images: resource.images, featured: resource.featured };
   }
 
-  async removePhoto(id: string, image: string) {
+  async removePhoto(id: string, image: string, user?: any) {
+    await this.assertRoomAccess(user, id); // audit A6
     const resource: any = await this.roomModel.findOne({ _id: id });
     if (!resource || !resource.images || resource.images.length === 0) return { notFound: true };
     resource.images = resource.images.filter((i: string) => i !== image);
@@ -422,7 +490,8 @@ export class RoomsService {
     return { images: resource.images, featured: resource.featured };
   }
 
-  async featurePhoto(id: string, image: string) {
+  async featurePhoto(id: string, image: string, user?: any) {
+    await this.assertRoomAccess(user, id); // audit A6
     const resource: any = await this.roomModel.findOne({ _id: id });
     if (!resource) return { notFound: true };
     resource.featured = [image];

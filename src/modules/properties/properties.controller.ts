@@ -59,9 +59,10 @@ export class PropertiesController {
     return this.propertiesService.hasAgreementSigned(req.user, this.perms(req));
   }
 
+  // audit A5: req.user passed through so the service can owner-scope by-id operations.
   @Get(':id')
-  async single(@Param('id') id: string) {
-    const resource = await this.propertiesService.single(id);
+  async single(@Req() req: any, @Param('id') id: string) {
+    const resource = await this.propertiesService.single(id, req.user);
     if (resource && (resource as any).notFound) {
       throw new HttpException({ message: 'Property does not exist' }, HttpStatus.NOT_FOUND);
     }
@@ -82,7 +83,7 @@ export class PropertiesController {
     @Body() body: any,
     @UploadedFiles() files: any,
   ) {
-    const resource = await this.propertiesService.modify(id, body, files, this.perms(req));
+    const resource = await this.propertiesService.modify(id, body, files, this.perms(req), req.user);
     if (!resource) {
       throw new HttpException({ message: 'Sorry, resource does not exist' }, HttpStatus.NOT_FOUND);
     }
@@ -90,19 +91,20 @@ export class PropertiesController {
   }
 
   @Delete(':id')
-  remove(@Param('id') id: string) {
-    return this.propertiesService.remove(id);
+  remove(@Req() req: any, @Param('id') id: string) {
+    return this.propertiesService.remove(id, req.user); // audit A5
   }
 
   // ---- Nearby ----
   @Post(':id/nearby')
   @UseInterceptors(FilesInterceptor('image', 10, nearbyUpload))
   async createNearby(
+    @Req() req: any,
     @Param('id') id: string,
     @Body('name') name: string,
     @UploadedFiles() files: any[],
   ) {
-    const result = await this.propertiesService.createNearby(id, name, files?.[0]);
+    const result = await this.propertiesService.createNearby(id, name, files?.[0], req.user);
     if ((result as any).notFound) {
       throw new HttpException({ message: 'Property does not exist' }, HttpStatus.NOT_FOUND);
     }
@@ -113,8 +115,8 @@ export class PropertiesController {
   }
 
   @Delete(':id/nearby/:nearbyId')
-  async removeNearby(@Param('id') id: string, @Param('nearbyId') nearbyId: string) {
-    const result = await this.propertiesService.removeNearby(id, nearbyId);
+  async removeNearby(@Req() req: any, @Param('id') id: string, @Param('nearbyId') nearbyId: string) {
+    const result = await this.propertiesService.removeNearby(id, nearbyId, req.user);
     if ((result as any).badRequest) {
       throw new HttpException(
         { message: (result as any).message },
@@ -130,8 +132,8 @@ export class PropertiesController {
   // ---- Photos ----
   @Post(':id/photos')
   @UseInterceptors(FilesInterceptor('file', 10, photosUpload))
-  async createPhoto(@Param('id') id: string, @UploadedFiles() files: any[]) {
-    const result = await this.propertiesService.createPhoto(id, files?.[0]);
+  async createPhoto(@Req() req: any, @Param('id') id: string, @UploadedFiles() files: any[]) {
+    const result = await this.propertiesService.createPhoto(id, files?.[0], req.user);
     if ((result as any).notFound) {
       throw new HttpException({ message: 'Sorry, resource does not exist' }, HttpStatus.NOT_FOUND);
     }
@@ -139,8 +141,8 @@ export class PropertiesController {
   }
 
   @Post(':id/photos/feature')
-  async featurePhoto(@Param('id') id: string, @Body('image') image: string) {
-    const result = await this.propertiesService.featurePhoto(id, image);
+  async featurePhoto(@Req() req: any, @Param('id') id: string, @Body('image') image: string) {
+    const result = await this.propertiesService.featurePhoto(id, image, req.user);
     if ((result as any).notFound) {
       throw new HttpException(
         { message: 'Sorry, there was an error in performing this action' },
@@ -152,8 +154,8 @@ export class PropertiesController {
 
   // POST (not DELETE): the image URL is sent in the body.
   @Post(':id/photos/remove')
-  async removePhoto(@Param('id') id: string, @Body('image') image: string) {
-    const result = await this.propertiesService.removePhoto(id, image);
+  async removePhoto(@Req() req: any, @Param('id') id: string, @Body('image') image: string) {
+    const result = await this.propertiesService.removePhoto(id, image, req.user);
     if ((result as any).notFound) {
       throw new HttpException({ message: 'Resource does not exist' }, HttpStatus.NOT_FOUND);
     }

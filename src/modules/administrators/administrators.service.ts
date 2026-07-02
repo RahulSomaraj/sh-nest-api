@@ -1,4 +1,4 @@
-import { Injectable } from '@nestjs/common';
+import { HttpException, HttpStatus, Injectable } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
 import { InjectModel } from '@nestjs/mongoose';
 import { Model } from 'mongoose';
@@ -33,6 +33,12 @@ export class AdministratorsService {
     @InjectModel(Role.name) private readonly roleModel: Model<any>,
     @InjectModel('properties') private readonly propertyModel: Model<any>,
     @InjectModel('currencies') private readonly currencyModel: Model<any>,
+    // audit A2: models needed by the delete guard + cascade.
+    @InjectModel('users') private readonly userModel: Model<any>,
+    @InjectModel('userbookings') private readonly userBookingModel: Model<any>,
+    @InjectModel('rooms') private readonly roomModel: Model<any>,
+    @InjectModel('bookings') private readonly availabilityBookingModel: Model<any>,
+    @InjectModel('bookinglogs') private readonly bookingLogModel: Model<any>,
     private readonly config: ConfigService,
     private readonly mailService: MailService,
   ) {}
@@ -177,7 +183,67 @@ export class AdministratorsService {
       .exec();
   }
 
+  /** audit A2: count active bookings (date_checkin >= now) across an admin's properties
+   *  — legacy hoteladmins POST /check_active_bookings. */
+  async checkActiveBookings(administratorId: string): Promise<{ status: number; count: number }> {
+    let count = 0;
+    if (administratorId) {
+      const propertyIds = await this.findAdministratorPropertyIds(administratorId);
+      if (propertyIds.length) {
+        count = await this.userBookingModel.countDocuments({
+          property: { $in: propertyIds },
+          date_checkin: { $gte: new Date() },
+        });
+      }
+    }
+    return { status: 1, count };
+  }
+
+  private async findAdministratorPropertyIds(administratorId: string): Promise<any[]> {
+    const properties = await this.propertyModel
+      .find({
+        $or: [
+          { administrator: administratorId },
+          { allAdministrators: { $in: [administratorId] } },
+        ],
+      })
+      .select('_id')
+      .lean();
+    return properties.map((p: any) => p._id);
+  }
+
   async remove(id: string) {
+    // audit A2: legacy hoteladmins delete guard + cascade, re-added.
+    // Refuse when any of the admin's properties has an active booking; otherwise
+    // cascade-delete the properties, their rooms (+ availability bookings/bookinglogs)
+    // and $pull the properties from users' favourites.
+    const propertyIds = await this.findAdministratorPropertyIds(id);
+    if (propertyIds.length) {
+      const activeBookings = await this.userBookingModel.countDocuments({
+        property: { $in: propertyIds },
+        date_checkin: { $gte: new Date() },
+      });
+      if (activeBookings) {
+        throw new HttpException(
+          {
+            status: 0,
+            message: 'Administrator has properties with active bookings and cannot be deleted',
+            count: activeBookings,
+          },
+          HttpStatus.BAD_REQUEST,
+        );
+      }
+      await this.userModel.updateMany(
+        { favourites: { $in: propertyIds } },
+        { $pull: { favourites: { $in: propertyIds } } },
+      );
+      // availability docs + logs carry `property`, so clean by property directly
+      // (goes beyond legacy, which orphaned these).
+      await this.availabilityBookingModel.deleteMany({ property: { $in: propertyIds } });
+      await this.bookingLogModel.deleteMany({ property: { $in: propertyIds } });
+      await this.roomModel.deleteMany({ property_id: { $in: propertyIds } });
+      await this.propertyModel.deleteMany({ _id: { $in: propertyIds } });
+    }
     return this.administratorModel.deleteOne({ _id: id }).exec();
   }
 

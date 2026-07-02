@@ -1,10 +1,15 @@
-import { Injectable } from '@nestjs/common';
+import { HttpException, HttpStatus, Injectable } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
 import { InjectModel } from '@nestjs/mongoose';
 import { Model, Types } from 'mongoose';
 import { basename } from 'path';
 import { promises as fsp } from 'fs';
 import sharp from 'sharp';
+import {
+  assertOwned,
+  ownedPropertyIds,
+  PROPERTY_SCOPE,
+} from '../../common/auth/owner-scope';
 
 const populations = [
   { path: 'rating' },
@@ -33,6 +38,11 @@ export class PropertiesService {
     @InjectModel('Administrator') private readonly administratorModel: Model<any>,
     @InjectModel('Role') private readonly roleModel: Model<any>,
     @InjectModel('countries') private readonly countryModel: Model<any>,
+    // audit A5: delete guard + cascade cleanup.
+    @InjectModel('users') private readonly userModel: Model<any>,
+    @InjectModel('userbookings') private readonly userBookingModel: Model<any>,
+    @InjectModel('bookings') private readonly availabilityBookingModel: Model<any>,
+    @InjectModel('bookinglogs') private readonly bookingLogModel: Model<any>,
     private readonly config: ConfigService,
   ) {}
 
@@ -200,7 +210,15 @@ export class PropertiesService {
     return { result: count > 0 };
   }
 
-  async single(id: string) {
+  /** audit A5: owner scoping for by-id operations — same rule as `list`, else 403. */
+  private async assertPropertyAccess(user: any, propertyId: string): Promise<void> {
+    const owned = await ownedPropertyIds(user, this.propertyModel, PROPERTY_SCOPE);
+    if (owned === null) return;
+    assertOwned(owned, propertyId);
+  }
+
+  async single(id: string, user?: any) {
+    await this.assertPropertyAccess(user, id); // audit A5
     const resource: any = await this.propertyModel
       .findOne({ _id: id })
       .populate(populations)
@@ -287,7 +305,8 @@ export class PropertiesService {
     return resource;
   }
 
-  async modify(id: string, resourceData: any, files: any, permissions: string[]) {
+  async modify(id: string, resourceData: any, files: any, permissions: string[], user?: any) {
+    await this.assertPropertyAccess(user, id); // audit A5
     resourceData = this.preCreateOrUpdate(resourceData, files, permissions);
 
     const resource: any = await this.propertyModel.findOne({ _id: id });
@@ -301,12 +320,37 @@ export class PropertiesService {
     return resource;
   }
 
-  async remove(id: string) {
+  async remove(id: string, user?: any) {
+    await this.assertPropertyAccess(user, id); // audit A5
+    // audit A5: refuse deletion while the property has active bookings, then cascade
+    // (rooms + availability bookings/bookinglogs + users' favourites) so no orphans remain.
+    const activeBookings = await this.userBookingModel.countDocuments({
+      property: id,
+      date_checkin: { $gte: new Date() },
+    });
+    if (activeBookings) {
+      throw new HttpException(
+        {
+          status: 0,
+          message: 'Property has active bookings and cannot be deleted',
+          count: activeBookings,
+        },
+        HttpStatus.BAD_REQUEST,
+      );
+    }
+    await this.userModel.updateMany(
+      { favourites: id },
+      { $pull: { favourites: id } },
+    );
+    await this.availabilityBookingModel.deleteMany({ property: id });
+    await this.bookingLogModel.deleteMany({ property: id });
+    await this.roomModel.deleteMany({ property_id: id });
     return this.propertyModel.deleteOne({ _id: id }).exec();
   }
 
   // ---- Nearby ----
-  async createNearby(id: string, name: string, file: any) {
+  async createNearby(id: string, name: string, file: any, user?: any) {
+    await this.assertPropertyAccess(user, id); // audit A5
     const resource: any = await this.propertyModel.findOne({ _id: id });
     if (!resource) return { notFound: true };
     if (!name) return { badRequest: true, message: 'Nearby location name is required' };
@@ -318,7 +362,8 @@ export class PropertiesService {
     return { record };
   }
 
-  async removeNearby(id: string, nearbyId: string) {
+  async removeNearby(id: string, nearbyId: string, user?: any) {
+    await this.assertPropertyAccess(user, id); // audit A5
     if (!nearbyId) return { badRequest: true, message: 'Sorry, invalid nearby place specified to remove' };
     const resource: any = await this.propertyModel.findOne({ _id: id, 'nearby._id': nearbyId });
     if (!resource) return { notFound: true };
@@ -328,7 +373,8 @@ export class PropertiesService {
   }
 
   // ---- Photos ----
-  async createPhoto(id: string, file: any) {
+  async createPhoto(id: string, file: any, user?: any) {
+    await this.assertPropertyAccess(user, id); // audit A5
     const resource: any = await this.propertyModel.findOne({ _id: id });
     if (!resource || !file) return { notFound: true };
 
@@ -343,7 +389,8 @@ export class PropertiesService {
     return { images: resource.images, featured: resource.featured };
   }
 
-  async removePhoto(id: string, image: string) {
+  async removePhoto(id: string, image: string, user?: any) {
+    await this.assertPropertyAccess(user, id); // audit A5
     const resource: any = await this.propertyModel.findOne({ _id: id });
     if (!resource || !resource.images || resource.images.length === 0) {
       return { notFound: true };
@@ -353,7 +400,8 @@ export class PropertiesService {
     return { images: resource.images, featured: resource.featured };
   }
 
-  async featurePhoto(id: string, image: string) {
+  async featurePhoto(id: string, image: string, user?: any) {
+    await this.assertPropertyAccess(user, id); // audit A5
     const resource: any = await this.propertyModel.findOne({ _id: id });
     if (!resource) return { notFound: true };
     resource.featured = [image];

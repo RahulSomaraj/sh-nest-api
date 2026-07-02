@@ -8,6 +8,10 @@ import {
   AdministratorSchema,
 } from '../administrators/schemas/administrator.schema';
 import { Role, RoleSchema } from '../administrators/schemas/role.schema';
+import {
+  BookingSchema,
+  BookingLogSchema,
+} from '../rooms/schemas/availability.schema';
 
 /**
  * The authoritative `properties` (+ rooms/countries/currencies/... loose) models come
@@ -21,6 +25,9 @@ import { Role, RoleSchema } from '../administrators/schemas/role.schema';
     MongooseModule.forFeature([
       { name: Administrator.name, schema: AdministratorSchema },
       { name: Role.name, schema: RoleSchema },
+      // audit A5: delete-cascade cleanup of availability bookings/bookinglogs.
+      { name: 'bookings', schema: BookingSchema },
+      { name: 'bookinglogs', schema: BookingLogSchema },
     ]),
   ],
   controllers: [PropertiesController],

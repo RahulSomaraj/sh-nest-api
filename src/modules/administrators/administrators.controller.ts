@@ -76,6 +76,15 @@ export class AdministratorsController {
     return this.administratorsService.remove(id);
   }
 
+  // audit A2: re-exposed legacy hoteladmins POST /check_active_bookings so the frontend
+  // can warn before a destructive delete. Same body/response contract ({status, count}).
+  @UseGuards(JwtAuthGuard, PermissionsGuard)
+  @RequirePermissions('LIST_ADMINISTRATORS')
+  @Post('check_active_bookings')
+  checkActiveBookings(@Body() body: any) {
+    return this.administratorsService.checkActiveBookings(body?.hoteladmin_id ?? body?.administrator_id);
+  }
+
   @UseGuards(JwtAuthGuard)
   @Post('send-welcome-email/:id')
   async sendWelcomeEmail(@Param('id') id: string) {
