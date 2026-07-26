@@ -1,6 +1,7 @@
 import { HttpException, HttpStatus, Injectable } from '@nestjs/common';
-import { InjectModel } from '@nestjs/mongoose';
-import { Model } from 'mongoose';
+import { InjectModel, InjectConnection } from '@nestjs/mongoose';
+import { Connection, Model } from 'mongoose';
+import { runInTransaction } from '../../common/db/transaction.util';
 import { basename } from 'path';
 import sharp from 'sharp';
 import moment from 'moment-timezone';
@@ -10,6 +11,7 @@ import {
   ownedPropertyIds,
   PROPERTY_SCOPE,
 } from '../../common/auth/owner-scope';
+import { scalarOrThrow } from '../../common/util/query.util';
 
 // 'property' (legacy) is NOT a path on the rooms schema — populating it throws
 // StrictPopulateError under Mongoose 8, so it is intentionally dropped here.
@@ -58,6 +60,7 @@ export class RoomsService {
     @InjectModel('userbookings') private readonly userBookingModel: Model<any>,
     @InjectModel('properties') private readonly propertyModel: Model<any>,
     private readonly mailService: MailService,
+    @InjectConnection() private readonly connection: Connection,
   ) {}
 
   private buildPages(basePath: string, limit: number, pageCount: number, currentPage: number) {
@@ -108,8 +111,11 @@ export class RoomsService {
     const skip = (activePage - 1) * limit;
 
     const where: any = {};
-    if (query.propertyId) where.property_id = query.propertyId;
-    if (query.property) where.property_id = query.property;
+    // audit C-2: reject non-scalar (operator-injection) values before they hit the filter.
+    const propertyIdFilter = scalarOrThrow(query.propertyId, 'propertyId');
+    const propertyFilter = scalarOrThrow(query.property, 'property');
+    if (propertyIdFilter !== undefined) where.property_id = propertyIdFilter;
+    if (propertyFilter !== undefined) where.property_id = propertyFilter;
 
     // audit A6: own-scoped admins only see rooms of their own properties.
     const owned = await this.ownedIds(user);
@@ -186,13 +192,20 @@ export class RoomsService {
       );
     }
     const room: any = await this.roomModel.findOne({ _id: id }).select('property_id').lean();
-    if (room) {
-      // Clean dependent availability docs + logs, and detach from the property (legacy $pull).
-      await this.bookingModel.deleteMany({ room: room._id });
-      await this.bookingLogModel.deleteMany({ room: room._id });
-      await this.propertyModel.updateOne({ _id: room.property_id }, { $pull: { rooms: room._id } });
-    }
-    return this.roomModel.deleteOne({ _id: id }).exec();
+    if (!room) return this.roomModel.deleteOne({ _id: id }).exec();
+
+    // audit C-4: clean dependent availability docs + logs, detach from the property, and
+    // delete the room atomically so a mid-way failure can't orphan availability/logs.
+    return runInTransaction(this.connection, async (session) => {
+      await this.bookingModel.deleteMany({ room: room._id }, { session });
+      await this.bookingLogModel.deleteMany({ room: room._id }, { session });
+      await this.propertyModel.updateOne(
+        { _id: room.property_id },
+        { $pull: { rooms: room._id } },
+        { session },
+      );
+      return this.roomModel.deleteOne({ _id: id }, { session });
+    });
   }
 
   // ---- Rates ----

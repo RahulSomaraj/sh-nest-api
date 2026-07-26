@@ -6,8 +6,10 @@ import {
   Module,
   Param,
   Query,
+  UseGuards,
 } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
+import { Throttle } from '@nestjs/throttler';
 import { MongooseModule, InjectModel } from '@nestjs/mongoose';
 import { Model } from 'mongoose';
 import moment from 'moment';
@@ -15,6 +17,7 @@ import { ReferenceModelsModule } from '../../common/reference/reference.module';
 import { InvoiceSchema } from '../invoices/schemas/invoice.schema';
 import { MailModule } from '../../common/mail/mail.module';
 import { MailService } from '../../common/mail/mail.service';
+import { PaymentWebhookGuard } from './payment-webhook.guard';
 
 /**
  * Port of capturePayment.js / returnPayment.js -> /admin/v2/capture/:bookingId and
@@ -55,12 +58,18 @@ export class PaymentsService {
     if (ub.no_of_adults) NO_OF_GUESTS += `${ub.no_of_adults} adults `;
     if (ub.no_of_children) NO_OF_GUESTS += `${ub.no_of_children} child`;
 
+    // audit N+1: resolve all room types in ONE query instead of findOne() per room.
+    const roomIds = rooms.map((r: any) => r.room?._id ?? r.room).filter(Boolean);
     const typeOfRooms: string[] = [];
-    for (const r of rooms) {
-      const room: any = await this.roomModel
-        .findOne({ _id: r.room?._id ?? r.room })
+    if (roomIds.length) {
+      const roomDocs: any[] = await this.roomModel
+        .find({ _id: { $in: roomIds } })
         .populate('room_type');
-      if (room?.room_type?.name) typeOfRooms.push(room.room_type.name);
+      const byId = new Map(roomDocs.map((rd: any) => [String(rd._id), rd]));
+      for (const r of rooms) {
+        const room: any = byId.get(String(r.room?._id ?? r.room));
+        if (room?.room_type?.name) typeOfRooms.push(room.room_type.name);
+      }
     }
 
     return {
@@ -240,19 +249,27 @@ export class PaymentsService {
     }
   }
 
-  private async containerPost(pathname: string, body: any): Promise<any | null> {
+  // audit C-5: never call the payment container without a timeout — a hung PSP would
+  // otherwise pin a connection/event-loop slot indefinitely. Returns { ok, data }.
+  private async containerPost(
+    pathname: string,
+    body: any,
+  ): Promise<{ ok: boolean; data: any }> {
     const base = this.config.get<string>('paymentContainerUrl');
-    if (!base) return null;
+    // No container configured → treat as skipped (ok) so the flow isn't blocked (legacy parity).
+    if (!base) return { ok: true, data: null };
     try {
       const resp = await fetch(`${base}${pathname}`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify(body),
+        signal: AbortSignal.timeout(8000),
       });
-      return await resp.json().catch(() => ({}));
+      const data = await resp.json().catch(() => ({}));
+      return { ok: resp.ok, data };
     } catch (e) {
       this.logger.error(`payment container ${pathname} failed`, (e as any)?.toString());
-      return null;
+      return { ok: false, data: null };
     }
   }
 
@@ -274,7 +291,30 @@ export class PaymentsService {
     if (!ub || ub.hotel_approved) return { status: 0 };
     if (ub.invoice_id) return this.handleHotelPayment(invoiceIdFromQuery, 'paid');
 
-    await this.userBookingModel.updateOne({ _id: bookingId }, { $set: { paid: 1, hotel_approved: 1 } });
+    // audit C-1/C-4: idempotent, atomic state transition. Only the first request that
+    // flips hotel_approved proceeds; concurrent/replayed hits are no-ops (no double capture).
+    const claim = await this.userBookingModel.updateOne(
+      { _id: bookingId, hotel_approved: { $ne: 1 } },
+      { $set: { paid: 1, hotel_approved: 1 } },
+    );
+    if (!((claim as any).modifiedCount ?? (claim as any).nModified)) {
+      return { status: 0, alreadyProcessed: true };
+    }
+
+    // audit C-4: if the gateway capture call fails, don't leave the booking marked paid.
+    const captured = await this.containerPost('/capture/', {
+      amount: ub.paymentAmt,
+      chargeId: ub.charge_uid,
+    });
+    if (!captured.ok) {
+      // Roll the claim back so the operation can be safely retried.
+      await this.userBookingModel.updateOne(
+        { _id: bookingId },
+        { $set: { paid: 0, hotel_approved: 0 } },
+      );
+      this.logger.error(`capture ${bookingId}: gateway /capture/ failed; rolled back`);
+      return { status: 0, gatewayError: true };
+    }
 
     // VCC amount = hotelAmt + non-tourism charges applied to hotelAmt
     let vccAmount = +ub.hotelAmt || 0;
@@ -287,8 +327,6 @@ export class PaymentsService {
       });
     }
 
-    await this.containerPost('/capture/', { amount: ub.paymentAmt, chargeId: ub.charge_uid });
-
     // audit A8: guest + hotel confirmation emails (v2 capturedPaymentEmail/capturedHotelEmail).
     // Fired without await — v2 didn't block the gateway response on them either.
     void this.sendCaptureEmails(ub, transactionId);
@@ -299,11 +337,17 @@ export class PaymentsService {
       verifyEmail: property?.primaryReservationEmail,
       bookingId: ub.book_id,
     });
-    if (vcc && vcc.url) {
-      await this.userBookingModel.updateOne({ _id: bookingId }, { $set: { vcc: vcc.url } });
-      return { status: 1, url: vcc.url };
+    if (vcc.ok && vcc.data?.url) {
+      await this.userBookingModel.updateOne({ _id: bookingId }, { $set: { vcc: vcc.data.url } });
+      return { status: 1, url: vcc.data.url };
     }
-    return { status: 0 };
+    // Captured but VCC not issued — flag for reconciliation rather than silently dropping.
+    await this.userBookingModel.updateOne(
+      { _id: bookingId },
+      { $set: { vcc_pending: true } },
+    );
+    this.logger.error(`capture ${bookingId}: captured but VCC not issued; flagged vcc_pending`);
+    return { status: 0, vccPending: true };
   }
 
   async return(bookingId: string, invoiceIdFromQuery?: string) {
@@ -314,9 +358,27 @@ export class PaymentsService {
     if (!ub || ub.hotel_cancelled || ub.hotel_approved) return { status: 0 };
     if (ub.invoice_id) return this.handleHotelPayment(invoiceIdFromQuery, 'rejected');
 
-    await this.userBookingModel.updateOne({ _id: bookingId }, { $set: { paid: 0, hotel_cancelled: 1 } });
+    // audit C-1/C-4: idempotent, atomic state transition (no double refund on replay).
+    const claim = await this.userBookingModel.updateOne(
+      { _id: bookingId, hotel_cancelled: { $ne: 1 }, hotel_approved: { $ne: 1 } },
+      { $set: { paid: 0, hotel_cancelled: 1 } },
+    );
+    if (!((claim as any).modifiedCount ?? (claim as any).nModified)) {
+      return { status: 0, alreadyProcessed: true };
+    }
 
-    await this.containerPost('/return/', { amount: ub.paymentAmt, chargeId: ub.charge_uid });
+    const returned = await this.containerPost('/return/', {
+      amount: ub.paymentAmt,
+      chargeId: ub.charge_uid,
+    });
+    if (!returned.ok) {
+      await this.userBookingModel.updateOne(
+        { _id: bookingId },
+        { $set: { hotel_cancelled: 0 } },
+      );
+      this.logger.error(`return ${bookingId}: gateway /return/ failed; rolled back`);
+      return { status: 0, gatewayError: true };
+    }
 
     // audit A8: guest + hotel cancellation emails (v2 cancelledPaymentEmail/cancelledHotelEmail).
     void this.sendReturnEmails(ub);
@@ -325,7 +387,11 @@ export class PaymentsService {
   }
 }
 
+// audit C-1: these are gateway return URLs (kept as GET for PSP compatibility) but are now
+// HMAC-verified by PaymentWebhookGuard and rate-limited (10/min/IP) as defence-in-depth.
 @Controller('capture')
+@UseGuards(PaymentWebhookGuard)
+@Throttle({ default: { limit: 10, ttl: 60_000 } })
 export class CaptureController {
   constructor(private readonly service: PaymentsService) {}
 
@@ -341,6 +407,8 @@ export class CaptureController {
 }
 
 @Controller('return')
+@UseGuards(PaymentWebhookGuard)
+@Throttle({ default: { limit: 10, ttl: 60_000 } })
 export class ReturnController {
   constructor(private readonly service: PaymentsService) {}
 
@@ -357,6 +425,6 @@ export class ReturnController {
     MongooseModule.forFeature([{ name: 'invoices', schema: InvoiceSchema }]),
   ],
   controllers: [CaptureController, ReturnController],
-  providers: [PaymentsService],
+  providers: [PaymentsService, PaymentWebhookGuard],
 })
 export class PaymentsModule {}

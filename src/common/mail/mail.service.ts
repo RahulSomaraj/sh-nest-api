@@ -384,4 +384,363 @@ export class MailService {
       html,
     });
   }
+
+  // ---------------------------------------------------------------------------
+  // Customer surface (`/api`) — MIGRATION.md phase 2.
+  // The website register/contact mails are built inline in legacy
+  // `controllers/api/website.js` rather than from a template file; the markup below
+  // reproduces that HTML (same table shell, same rows, same copy).
+  // ---------------------------------------------------------------------------
+
+  /** Escape interpolated form input — legacy concatenated it into HTML unescaped. */
+  private esc(value: unknown): string {
+    return String(value ?? '')
+      .replace(/&/g, '&amp;')
+      .replace(/</g, '&lt;')
+      .replace(/>/g, '&gt;')
+      .replace(/"/g, '&quot;');
+  }
+
+  /** The shared header/body chrome used by both website mails. */
+  private websiteShell(logoUrl: string, inner: string): string {
+    return `<html>
+    <body>
+        <div style="background-color:#eee">
+            <div style="background-color:#eee">
+                <div style="background:#fff;background-color:#fff;Margin:0px auto;max-width:600px">
+                    <table align="center" border="0" cellpadding="0" cellspacing="0" role="presentation" style="background:#fff;background-color:#fff;width:100%">
+                        <tbody>
+                            <tr>
+                                <td style="direction:ltr;font-size:0px;padding:10px 10px 10px 0px;text-align:center;vertical-align:top;border-bottom: 3px solid green;background-color: #082d70;">
+                                    <div style="font-size:13px;text-align:left;direction:ltr;display:inline-block;vertical-align:top;width:100%">
+                                        <table border="0" cellpadding="0" cellspacing="0" role="presentation" style="vertical-align:top" width="100%">
+                                            <tbody><tr>
+                                                    <td align="left" style="font-size:0px;padding:10px 25px;word-break:break-word">
+                                                        <table align="left" border="0" cellpadding="0" cellspacing="0" role="presentation" style="border-collapse:collapse;border-spacing:0px">
+                                                            <tbody>
+                                                                <tr>
+                                                                    <td style="font-family:Helvetica,Arial,sans-serif;font-size: 30px;font-weight: bold;line-height:24px;text-align:left;color:#4c4c4c;">
+                                                                        <img src='${logoUrl}' style="width:220px;">
+                                                                    </td>
+                                                                </tr>
+                                                            </tbody>
+                                                        </table>
+                                                    </td>
+                                                </tr>
+                                            </tbody></table>
+                                    </div>
+                                </td>
+                            </tr>
+                        </tbody>
+                    </table>
+                </div>
+                <div style="background:#fff;background-color:#fff;Margin:0px auto;max-width:600px">
+                    <table align="center" border="0" cellpadding="0" cellspacing="0" role="presentation" style="background:#fff;background-color:#fff;width:100%">
+                        <tbody>
+                            <tr>
+                                <td style="direction:ltr;font-size:0px;padding:20px 0;text-align:center;vertical-align:top">
+                                    <div style="font-size:13px;text-align:left;direction:ltr;display:inline-block;vertical-align:top;width:100%">
+                                        <table border="0" cellpadding="0" cellspacing="0" role="presentation" style="vertical-align:top" width="100%">
+                                            <tbody>${inner}
+                                                <tr>
+                                                    <td align="left" style="font-size:0px;padding:10px 25px;word-break:break-word">
+                                                        <div style="font-family:Helvetica,Arial,sans-serif;font-size:16px;font-weight:400;line-height:24px;text-align:left;color:#4c4c4c">Regards,<br>Team Stayhoppers
+                                                        </div>
+                                                    </td>
+                                                </tr>
+                                            </tbody>
+                                        </table>
+                                    </div>
+                                </td>
+                            </tr>
+                        </tbody>
+                    </table>
+                </div>
+            </div>
+        </div>
+    </body>
+</html>`;
+  }
+
+  private greetingRow(greeting: string, message: string): string {
+    return `
+                                                <tr>
+                                                    <td align="left" style="font-size:0px;padding:10px 25px;word-break:break-word">
+                                                        <div style="font-family:Helvetica,Arial,sans-serif;font-size:16px;font-weight:400;line-height:24px;text-align:left;color:#4c4c4c">
+                                                            Hello <span style="color: green;">${greeting}</span>,<br><br>${message}<br></div>
+                                                    </td>
+                                                </tr>`;
+  }
+
+  private detailsRow(fields: Array<[string, unknown]>): string {
+    const rows = fields
+      .map(
+        ([label, value]) => `
+                                                                <tr style="border-bottom:1px solid #ecedee;text-align:left;padding:15px 0">
+                                                                    <th style="padding:0 25px 0 0" width="80px">${label}</th>
+                                                                    <th style="padding:0 15px">${this.esc(value)}</th>
+                                                                </tr>`,
+      )
+      .join('');
+    return `
+                                                <tr>
+                                                    <td align="left" style="font-size:0px;padding:10px 25px;word-break:break-word">
+                                                        <table border="0" style="color:#000;font-family:Helvetica,Arial,sans-serif;font-size:14px;line-height:24px;table-layout:auto;width:100%">
+                                                            <tbody>${rows}
+                                                            </tbody>
+                                                        </table>
+                                                    </td>
+                                                </tr>`;
+  }
+
+  /**
+   * W1 — `POST /api/website/register`: notify the StayHopper admins, then thank the
+   * submitter. Legacy `website.js:23` sends both mails unconditionally.
+   */
+  async sendWebsitePropertyRegistration(
+    logoUrl: string,
+    body: {
+      name?: string;
+      email_address?: string;
+      phone_number?: string;
+      hotel_name?: string;
+      city?: string;
+    },
+  ): Promise<void> {
+    const m = this.mail;
+    const bcc = m.bccEmail ? [{ email: m.bccEmail }] : [];
+
+    await this.send({
+      to: m.adminEmail,
+      bcc,
+      from: m.fromEmail,
+      subject: 'STAYHOPPER: New property created from website',
+      text: 'New property created from website, see details below:',
+      html: this.websiteShell(
+        logoUrl,
+        this.greetingRow(
+          'StayhopperAdmin',
+          'New property created from website, see details below:',
+        ) +
+          this.detailsRow([
+            ['Name', body.name],
+            ['Email', body.email_address],
+            ['Phone', body.phone_number],
+            ['Hotel name', body.hotel_name],
+            ['City', body.city],
+          ]),
+      ),
+    });
+
+    await this.send({
+      to: body.email_address,
+      bcc,
+      from: m.fromEmail,
+      subject: 'STAYHOPPER: Thank you for registering property with us!',
+      text: 'Thank you for registering property with us. Property will be reviewed and up in the app soon!',
+      html: this.websiteShell(
+        logoUrl,
+        this.greetingRow(
+          this.esc(body.name),
+          'Thank you for registering property with us. Property will be reviewed and up in the app soon!',
+        ),
+      ),
+    });
+  }
+
+  /** W2 — `POST /api/website/contact` (legacy `website.js:229`). */
+  async sendWebsiteContact(
+    logoUrl: string,
+    body: {
+      name?: string;
+      email_address?: string;
+      phone_number?: string;
+      address?: string;
+      message?: string;
+    },
+  ): Promise<void> {
+    const m = this.mail;
+    const bcc = m.bccEmail ? [{ email: m.bccEmail }] : [];
+
+    await this.send({
+      to: m.adminEmail,
+      bcc,
+      from: m.fromEmail,
+      subject: 'STAYHOPPER: Contact form enquiry from website',
+      text: 'Contact form enquiry from website, see details below:',
+      html: this.websiteShell(
+        logoUrl,
+        this.greetingRow(
+          'StayhopperAdmin',
+          'Contact form enquiry from website, see details below',
+        ) +
+          this.detailsRow([
+            ['Name', body.name],
+            ['Email', body.email_address],
+            ['Phone', body.phone_number],
+            ['Address', body.address],
+            ['Message', body.message],
+          ]),
+      ),
+    });
+
+    await this.send({
+      to: body.email_address,
+      bcc,
+      from: m.fromEmail,
+      subject: 'STAYHOPPER: Thank you for contacting us!',
+      text: 'Thank you for contacting us. Our represantative will get back to you soon.',
+      html: this.websiteShell(
+        logoUrl,
+        this.greetingRow(
+          this.esc(body.name),
+          'Thank you for contacting us. Our team will get back to you soon.',
+        ),
+      ),
+    });
+  }
+
+  /** W6 — `POST /api/contactus` (legacy `contactus.js:12`, public/app-message.html). */
+  async sendContactUsMessage(params: {
+    name: string;
+    email: string;
+    subject: string;
+    message: string;
+    date: string;
+  }): Promise<void> {
+    const m = this.mail;
+    await this.sendTemplated({
+      template: 'app-message.html',
+      replacements: {
+        NAME: params.name,
+        EMAIL: params.email,
+        SUBJECT: params.subject,
+        MSGDATE: params.date,
+        MESSAGE: params.message,
+        CURRENT_YEAR: String(new Date().getFullYear()),
+      },
+      to: m.contactusEmail,
+      bcc: m.bccEmail ? [m.bccEmail] : [],
+      subject: `STAYHOPPER: New Message, ${params.subject}`,
+      text: 'Contact page message',
+    });
+  }
+
+  /** U1 — `POST /api/users` welcome mail (public/user_welcome.html). */
+  async sendCustomerWelcome(
+    toEmail: string,
+    name: string,
+    plainPassword: string,
+  ): Promise<void> {
+    await this.sendTemplated({
+      template: 'user_welcome.html',
+      replacements: {
+        NAME: name,
+        EMAIL: toEmail,
+        PASSWORD: plainPassword,
+        CURRENT_YEAR: String(new Date().getFullYear()),
+      },
+      to: toEmail,
+      // Legacy has the bcc line commented out on this mail — kept off for parity.
+      subject: 'STAYHOPPER: Welcome to Stayhopper!',
+      text: 'Congratulations! Your account has been created',
+    });
+  }
+
+  /**
+   * B2 — guest "booking is almost ready" mail sent when a booking is created and the
+   * payment link is issued (legacy `controllers/api/v2/email.js#sendBookedEmail`,
+   * public/booking_hold.html).
+   */
+  async sendBookingHoldEmail(
+    toEmail: string,
+    replacements: Record<string, string>,
+  ): Promise<void> {
+    const m = this.mail;
+    await this.sendTemplated({
+      template: 'booking_hold.html',
+      replacements,
+      to: toEmail,
+      bcc: m.bccEmail ? [m.bccEmail] : [],
+      subject: ' Your Stayhopper Booking is Almost Ready! ',
+      text: 'Stayhopper booking Almost Ready!',
+    });
+  }
+
+  /**
+   * B4 — hotel "new booking" mail sent from the payment-success return
+   * (legacy `controllers/api/v2/payment.js:299`, public/order_hotel_booked.html).
+   */
+  async sendHotelBookedEmail(
+    toEmail: string,
+    secondaryBcc: string[],
+    replacements: Record<string, string>,
+  ): Promise<void> {
+    const m = this.mail;
+    await this.sendTemplated({
+      template: 'order_hotel_booked.html',
+      replacements,
+      to: toEmail,
+      bcc: [
+        ...(m.bccEmail ? [m.bccEmail] : []),
+        'hotelbookings@stayhopper.com',
+        ...secondaryBcc,
+      ],
+      subject: 'Stayhopper: New Booking',
+      text: 'Stayhopper New Hotel Booking',
+    });
+  }
+
+  /**
+   * B2 — internal alert that a booking is awaiting payment
+   * (legacy `bookings.js:880`, public/paymentcancelled.html).
+   */
+  async sendUnpaidBookingAlert(replacements: Record<string, string>): Promise<void> {
+    const m = this.mail;
+    await this.sendTemplated({
+      template: 'paymentcancelled.html',
+      replacements,
+      to: m.fromEmail,
+      bcc: [m.unpaidEmail, ...(m.bccEmail ? [m.bccEmail] : [])],
+      subject: 'STAYHOPPER: New Booking Payment Alert',
+      text: 'Booking Payment Alert',
+    });
+  }
+
+  /**
+   * B7 — `POST /api/v3/resendConfirmMail`
+   * (legacy `v3/resendConfirmationMail.js`, public/resend-confirmation-mail.html).
+   */
+  async resendBookingConfirmation(
+    toEmail: string,
+    replacements: Record<string, string>,
+  ): Promise<void> {
+    await this.sendTemplated({
+      template: 'resend-confirmation-mail.html',
+      replacements,
+      to: toEmail,
+      subject: 'Stayhopper: New Booking',
+      text: 'STAYHOPPER: Booking log details',
+    });
+  }
+
+  /** U7 — `POST /api/users/reset-password` (public/user_reset.html). */
+  async sendCustomerResetPassword(
+    toEmail: string,
+    plainPassword: string,
+  ): Promise<void> {
+    const m = this.mail;
+    await this.sendTemplated({
+      template: 'user_reset.html',
+      replacements: {
+        EMAIL: toEmail,
+        PASSWORD: plainPassword,
+        CURRENT_YEAR: String(new Date().getFullYear()),
+      },
+      to: toEmail,
+      bcc: [...(m.bccEmail ? [m.bccEmail] : []), 'resetpwds@stayhopper.com'],
+      subject: 'STAYHOPPER: Reset Password',
+      text: `Stayhopper Account New Password:${plainPassword}`,
+    });
+  }
 }

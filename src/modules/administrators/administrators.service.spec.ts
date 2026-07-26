@@ -1,6 +1,8 @@
 import { HttpException } from '@nestjs/common';
 import { AdministratorsService } from './administrators.service';
-import { mockQuery } from '../../testing/mocks';
+import { mockQuery, mockConnection } from '../../testing/mocks';
+
+const withSession = expect.objectContaining({ session: expect.anything() });
 
 /**
  * Module: administrators (audit A2)
@@ -32,6 +34,7 @@ describe('Module: administrators (A2)', () => {
     const bookingLogModel: any = { deleteMany: jest.fn().mockResolvedValue({}) };
     const config: any = { get: jest.fn() };
     const mailService: any = {};
+    const connection = mockConnection();
 
     const service = new AdministratorsService(
       administratorModel,
@@ -45,6 +48,7 @@ describe('Module: administrators (A2)', () => {
       bookingLogModel,
       config,
       mailService,
+      connection,
     );
 
     return {
@@ -84,13 +88,25 @@ describe('Module: administrators (A2)', () => {
       expect(b.userModel.updateMany).toHaveBeenCalledWith(
         { favourites: { $in: [PROP_ID] } },
         { $pull: { favourites: { $in: [PROP_ID] } } },
+        withSession,
       );
-      expect(b.availabilityBookingModel.deleteMany).toHaveBeenCalledWith({
-        property: { $in: [PROP_ID] },
-      });
-      expect(b.bookingLogModel.deleteMany).toHaveBeenCalledWith({ property: { $in: [PROP_ID] } });
-      expect(b.roomModel.deleteMany).toHaveBeenCalledWith({ property_id: { $in: [PROP_ID] } });
-      expect(b.propertyModel.deleteMany).toHaveBeenCalledWith({ _id: { $in: [PROP_ID] } });
+      expect(b.availabilityBookingModel.deleteMany).toHaveBeenCalledWith(
+        { property: { $in: [PROP_ID] } },
+        withSession,
+      );
+      expect(b.bookingLogModel.deleteMany).toHaveBeenCalledWith(
+        { property: { $in: [PROP_ID] } },
+        withSession,
+      );
+      expect(b.roomModel.deleteMany).toHaveBeenCalledWith(
+        { property_id: { $in: [PROP_ID] } },
+        withSession,
+      );
+      expect(b.propertyModel.deleteMany).toHaveBeenCalledWith(
+        { _id: { $in: [PROP_ID] } },
+        withSession,
+      );
+      // audit C-4: admin doc is deleted after the atomic cascade.
       expect(b.administratorModel.deleteOne).toHaveBeenCalledWith({ _id: ADMIN_ID });
       expect(result).toEqual({ deletedCount: 1 });
     });

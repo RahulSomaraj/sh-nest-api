@@ -12,6 +12,7 @@ import {
   Req,
   UseGuards,
 } from '@nestjs/common';
+import { Throttle } from '@nestjs/throttler';
 import { AdministratorsService } from './administrators.service';
 import { JwtAuthGuard } from '../auth/guards/jwt-auth.guard';
 import { PermissionsGuard } from '../../common/auth/permissions.guard';
@@ -102,6 +103,8 @@ export class AdministratorsController {
   }
 
   // Public onboarding routes (website-driven), no auth — matches legacy.
+  // audit (auth hardening): throttle public routes that send email + issue activation codes.
+  @Throttle({ default: { limit: 5, ttl: 60_000 } })
   @Post('onboarding')
   async onboarding(@Body() dto: OnboardingDto) {
     const result = await this.administratorsService.onboarding(dto);
@@ -114,6 +117,8 @@ export class AdministratorsController {
     );
   }
 
+  // audit (auth hardening): throttle activation-code verification to blunt brute force.
+  @Throttle({ default: { limit: 10, ttl: 60_000 } })
   @Post('onboarding/verify')
   async onboardingVerify(@Body() dto: OnboardingVerifyDto) {
     const result = await this.administratorsService.onboardingVerify(dto);

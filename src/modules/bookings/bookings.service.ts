@@ -8,6 +8,8 @@ import {
   ownedPropertyIds,
   BOOKING_SCOPE,
 } from '../../common/auth/owner-scope';
+import { scalarOrThrow } from '../../common/util/query.util';
+import { UpdateBookingGuestDto } from './dto/update-booking-guest.dto';
 
 const activePopulations = [
   { path: 'user' },
@@ -87,12 +89,16 @@ export class BookingsService {
       }
     }
 
-    if (query.property) {
-      if (status === 'active') where.property = query.property;
-      else where['propertyInfo.id'] = query.property;
+    // audit C-2: reject non-scalar (operator-injection) values before they hit the filter.
+    const propertyFilter = scalarOrThrow(query.property, 'property');
+    const userFilter = scalarOrThrow(query.user, 'user');
+    const dateFilter = scalarOrThrow(query.date, 'date');
+    if (propertyFilter !== undefined) {
+      if (status === 'active') where.property = propertyFilter;
+      else where['propertyInfo.id'] = propertyFilter;
     }
-    if (query.user) where.user = query.user;
-    if (query.date) where.checkin_date = moment(new Date(query.date)).format('YYYY-MM-DD');
+    if (userFilter !== undefined) where.user = userFilter;
+    if (dateFilter !== undefined) where.checkin_date = moment(new Date(dateFilter)).format('YYYY-MM-DD');
     return where;
   }
 
@@ -131,21 +137,38 @@ export class BookingsService {
 
     let pageItems: any[];
     if (isPropertySort) {
-      // Sort by a name that isn't natively sortable (populated / embedded) — load, sort, slice.
-      let all = await model.find(where).sort({ _id: 1 }).lean().exec();
+      // audit perf: sort-by-property no longer loads the whole collection into memory.
+      const dir = isAsc ? 1 : -1;
       if (active) {
-        all = await this.userBookingModel.populate(all, activePopulations);
+        // Active bookings reference `property` (name not on the doc): aggregate a $lookup
+        // to sort by property name in the DB, take one page of ids, then fetch + populate.
+        const paged = await this.userBookingModel.aggregate([
+          { $match: where },
+          { $lookup: { from: 'properties', localField: 'property', foreignField: '_id', as: '_prop' } },
+          { $addFields: { _pname: { $toLower: { $ifNull: [{ $arrayElemAt: ['$_prop.name', 0] }, ''] } } } },
+          { $sort: { _pname: dir, _id: 1 } },
+          { $skip: skip },
+          { $limit: limit },
+          { $project: { _id: 1 } },
+        ]);
+        const ids = paged.map((d: any) => d._id);
+        pageItems = await this.userBookingModel.find({ _id: { $in: ids } }).lean().exec();
+        const order = new Map(ids.map((id: any, i: number) => [String(id), i]));
+        pageItems.sort(
+          (a: any, b: any) => (order.get(String(a._id)) ?? 0) - (order.get(String(b._id)) ?? 0),
+        );
+        pageItems = await this.userBookingModel.populate(pageItems, activePopulations);
       } else {
-        all = await this.attachCompletedProperties(all);
+        // Completed bookings embed propertyInfo.name — sortable directly in the DB.
+        pageItems = await model
+          .find(where)
+          .sort({ 'propertyInfo.name': dir, _id: 1 })
+          .skip(skip)
+          .limit(limit)
+          .lean()
+          .exec();
+        pageItems = await this.attachCompletedProperties(pageItems);
       }
-      const nameOf = (x: any) =>
-        (active ? x?.property?.name : x?.propertyInfo?.name || '')?.trim().toLowerCase() || '';
-      all.sort((a: any, b: any) => {
-        const na = nameOf(a);
-        const nb = nameOf(b);
-        return na < nb ? (isAsc ? -1 : 1) : na > nb ? (isAsc ? 1 : -1) : 0;
-      });
-      pageItems = all.slice(skip, skip + limit);
     } else {
       pageItems = await model.find(where).sort(sort).skip(skip).limit(limit).lean().exec();
       if (active) pageItems = await this.userBookingModel.populate(pageItems, activePopulations);
@@ -210,6 +233,50 @@ export class BookingsService {
     const charges = active ? resource?.property?.charges : resource?.propertyInfo?.id?.charges;
     const withAmt = this.withHotelFinalAmount(resource, charges);
     return { hotelFinalAmount: withAmt.hotelFinalAmount, ...resource };
+  }
+
+  /**
+   * PUT /bookings/:id — GUEST DETAILS ONLY. Updates guest identity fields
+   * (title/first_name/last_name/email/mobile); never dates, room, status, or amounts.
+   * Active bookings store these under `guestinfo`, completed under `guestInfo`. Owner-scoped
+   * (audit A7); guest PII masked in the response for non-LIST_ALL admins, mirroring single().
+   */
+  async modifyGuest(id: string, dto: UpdateBookingGuestDto, permissions: string[], user?: any) {
+    const allowed: (keyof UpdateBookingGuestDto)[] = [
+      'title',
+      'first_name',
+      'last_name',
+      'email',
+      'mobile',
+    ];
+    const provided = allowed.filter((k) => typeof dto[k] !== 'undefined');
+    if (!provided.length) return { badRequest: true };
+
+    // Active bookings store guest under `guestinfo`; completed under `guestInfo`.
+    let model: Model<any> = this.userBookingModel;
+    let field = 'guestinfo';
+    let active = true;
+    let doc: any = await this.userBookingModel.findOne({ _id: id }).lean().exec();
+    if (!doc) {
+      doc = await this.completedModel.findOne({ _id: id }).lean().exec();
+      if (!doc) return { notFound: true };
+      model = this.completedModel;
+      field = 'guestInfo';
+      active = false;
+    }
+
+    await this.assertBookingAccess(user, doc, active); // audit A7 owner scoping
+
+    const set: any = {};
+    for (const k of provided) set[`${field}.${k}`] = dto[k];
+
+    const updated: any = await model
+      .findOneAndUpdate({ _id: id }, { $set: set }, { new: true })
+      .lean()
+      .exec();
+
+    if (!has(permissions, 'LIST_ALL_BOOKINGS')) this.maskGuest(updated[field]);
+    return updated;
   }
 
   // ---- Cancellation / no-show flows ----

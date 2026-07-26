@@ -3,6 +3,7 @@ import { ConfigService } from '@nestjs/config';
 import { InjectModel } from '@nestjs/mongoose';
 import { Model } from 'mongoose';
 import moment from 'moment';
+import { scalarOrThrow } from '../../common/util/query.util';
 
 const populations = [
   { path: 'property', populate: [{ path: 'contactinfo.country' }, { path: 'contactinfo.city' }] },
@@ -46,9 +47,13 @@ export class InvoicesService {
         $or: [{ administrator: user._id }, { property: { $in: props.map((p: any) => p._id) } }],
       });
     }
-    if (query.property) where.property = query.property;
-    if (query.date) where.invoiceForDate = moment(new Date(query.date)).startOf('month').format('YYYY-MM-DD');
-    if (query.status) where.status = query.status;
+    // audit C-2: reject non-scalar (operator-injection) values before they hit the filter.
+    const propertyFilter = scalarOrThrow(query.property, 'property');
+    const dateFilter = scalarOrThrow(query.date, 'date');
+    const statusFilter = scalarOrThrow(query.status, 'status');
+    if (propertyFilter !== undefined) where.property = propertyFilter;
+    if (dateFilter !== undefined) where.invoiceForDate = moment(new Date(dateFilter)).startOf('month').format('YYYY-MM-DD');
+    if (statusFilter !== undefined) where.status = statusFilter;
     return where;
   }
 
@@ -64,13 +69,22 @@ export class InvoicesService {
 
     let list: any[];
     if (isPropertySort) {
-      let all = await this.invoiceModel.find(where).populate(populations).lean().exec();
-      all.sort((a: any, b: any) => {
-        const na = (a.property?.name || '').trim().toLowerCase();
-        const nb = (b.property?.name || '').trim().toLowerCase();
-        return na < nb ? (isAsc ? -1 : 1) : na > nb ? (isAsc ? 1 : -1) : 0;
-      });
-      list = all.slice(skip, skip + limit);
+      // audit perf: don't load the whole collection to sort by the populated property
+      // name — aggregate a $lookup to sort + paginate in the DB, then fetch + populate.
+      const dir = isAsc ? 1 : -1;
+      const paged = await this.invoiceModel.aggregate([
+        { $match: where },
+        { $lookup: { from: 'properties', localField: 'property', foreignField: '_id', as: '_prop' } },
+        { $addFields: { _pname: { $toLower: { $ifNull: [{ $arrayElemAt: ['$_prop.name', 0] }, ''] } } } },
+        { $sort: { _pname: dir, _id: 1 } },
+        { $skip: skip },
+        { $limit: limit },
+        { $project: { _id: 1 } },
+      ]);
+      const ids = paged.map((d: any) => d._id);
+      list = await this.invoiceModel.find({ _id: { $in: ids } }).populate(populations).lean().exec();
+      const order = new Map(ids.map((id: any, i: number) => [String(id), i]));
+      list.sort((a: any, b: any) => (order.get(String(a._id)) ?? 0) - (order.get(String(b._id)) ?? 0));
     } else {
       let sort: any = { _id: 1 };
       if (query.order && query.orderBy) {
@@ -202,6 +216,8 @@ export class InvoicesService {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify(body),
+        // audit C-5: bound the external call so a hung Telr gateway can't hang the request.
+        signal: AbortSignal.timeout(8000),
       });
       const obj: any = await resp.json();
       if (obj && obj.order) return { order: obj.order };

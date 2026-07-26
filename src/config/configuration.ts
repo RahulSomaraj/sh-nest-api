@@ -5,7 +5,10 @@ export default () => {
   }
   return {
   port: parseInt(process.env.PORT, 10) || 3008,
-  globalPrefix: process.env.API_GLOBAL_PREFIX || 'admin/v2',
+  // Route prefixes are applied per-surface by RouterModule (AppModule), not globally:
+  // admin/v2 = extranet + sh-account, api = sh-website customer surface.
+  adminPrefix: process.env.API_GLOBAL_PREFIX || 'admin/v2',
+  customerPrefix: process.env.API_CUSTOMER_PREFIX || 'api',
   apiSecret: process.env.API_SECRET,
   // JWT lifetime for newly issued tokens (e.g. '7d', '12h'). Legacy tokens
   // never expired; new logins now get a bounded lifetime.
@@ -34,6 +37,9 @@ export default () => {
     api: process.env.TELR_API || '',
     storeId: process.env.TELR_STORE_ID || '',
   },
+  // audit C-1: shared secret for HMAC-verifying payment capture/return webhooks.
+  // When unset, PaymentWebhookGuard logs a warning and allows (non-breaking rollout).
+  paymentWebhookSecret: process.env.PAYMENT_WEBHOOK_SECRET || '',
   // Default commission shown for properties without an explicit agreement (config.commission).
   commission: {
     hourly: parseInt(process.env.COMMISSION_HOURLY, 10) || 15,
@@ -50,6 +56,127 @@ export default () => {
     // Directories holding the legacy HTML templates (reuse the sh-api files or copy them in).
     emailsDir: process.env.EMAILS_DIR || 'emails',
     publicDir: process.env.PUBLIC_DIR || 'public',
+    // Legacy config/default.json recipients used by the customer surface.
+    adminEmail: process.env.WEBSITE_ADMIN_EMAIL || 'info@stayhopper.com',
+    cancellationEmail: process.env.WEBSITE_CANCELLATION_EMAIL || 'support@stayhopper.com',
+    invoiceEmail: process.env.INVOICE_EMAIL || 'accounts@stayhopper.com',
+    unpaidEmail: process.env.UNPAID_EMAIL || 'unpaid@stayhopper.com',
   },
+
+  // ---------------------------------------------------------------------------
+  // Customer (`/api`) surface — legacy `config` values used by controllers/api/*
+  // and services/*. Names mirror the legacy keys so the ported code reads the same.
+  // ---------------------------------------------------------------------------
+
+  appName: process.env.APP_NAME || 'StayHopper',
+  websiteUrl: process.env.WEBSITE_URL || 'https://www.stayhopper.com/',
+
+  // `countrySelection` middleware default (config.countryId.UAE).
+  countryId: {
+    UAE: process.env.COUNTRY_ID_UAE || '5b87b5e26ebfc73aed2589f7',
+  },
+  defaultTimezone: process.env.DEFAULT_TIMEZONE || 'Asia/Dubai',
+
+  // config.pageSize
+  pageSize: {
+    popularProperties: parseInt(process.env.PAGE_SIZE_POPULAR, 10) || 10,
+    cheapestProperties: parseInt(process.env.PAGE_SIZE_CHEAPEST, 10) || 10,
+    searchProperties: parseInt(process.env.PAGE_SIZE_SEARCH, 10) || 10,
+  },
+
+  // Pricing / booking constants (config.*). Changing these changes money math —
+  // they are deliberately identical to legacy config/default.json + production.json.
+  bookingCharge: parseFloat(process.env.BOOKING_CHARGE) || 10,
+  mamopayCharges: parseFloat(process.env.MAMOPAY_CHARGES) || 6,
+  dailyHours: parseInt(process.env.DAILY_HOURS, 10) || 22,
+  rebookingAmt: parseFloat(process.env.REBOOKING_AMT) || 10,
+  vat: parseFloat(process.env.VAT) || 5,
+  maxDistance: parseInt(process.env.MAX_DISTANCE, 10) || 4000,
+  dateBlockNumber: parseInt(process.env.DATE_BLOCK_NUMBER, 10) || 30,
+  minNumberOfBookingHours:
+    parseInt(process.env.MIN_NUMBER_OF_BOOKING_HOURS, 10) || 4,
+  testProperty: process.env.TEST_PROPERTY || '5c34612e63b3ad0b1d4602fd',
+
+  /**
+   * config.bookingFee — per-country, per-bookingType platform fee.
+   * Override wholesale with BOOKING_FEE_JSON (same shape) if the table changes.
+   */
+  bookingFee: parseJson(process.env.BOOKING_FEE_JSON, {
+    // UAE
+    '5b87b5e26ebfc73aed2589f7': [
+      {
+        commentsForAdmin: 'UAE / AED / hourly',
+        currency: '5b616c7556fa98278f681e4a',
+        bookingType: 'hourly',
+        fee: 10,
+      },
+      {
+        commentsForAdmin: 'UAE / AED / monthly',
+        currency: '5b616c7556fa98278f681e4a',
+        bookingType: 'monthly',
+        fee: 25,
+      },
+    ],
+    // India
+    '5f0c7437f90937c4c19a1adf': [
+      {
+        commentsForAdmin: 'India / RS / hourly',
+        currency: '5f0cbd9dba4abaf8e4f45892',
+        bookingType: 'hourly',
+        fee: 300,
+      },
+      {
+        commentsForAdmin: 'India / RS / monthly',
+        currency: '5f0cbd9dba4abaf8e4f45892',
+        bookingType: 'monthly',
+        fee: 450,
+      },
+    ],
+  }),
+
+  // Mailchimp list subscriptions (website subscribe + user signup).
+  mailchimp: {
+    apiKey: process.env.MAILCHIMP_API_KEY || '',
+    listId: process.env.MAILCHIMP_LIST_ID || '',
+    adminListId: process.env.MAILCHIMP_ADMIN_LIST_ID || '',
+    androidId: process.env.MAILCHIMP_ANDROID_ID || '',
+    iosId: process.env.MAILCHIMP_IOS_ID || '',
+  },
+
+  /**
+   * Google Maps Geocoding — MIGRATION.md 2g#4: the legacy key was committed in
+   * `controllers/api/v2/main.js:18`. It must come from the environment and the old
+   * one must be rotated. Empty => the geocode redirect route returns its error path.
+   */
+  googleMapsApiKey: process.env.GOOGLE_MAPS_API_KEY || '',
+
+  /**
+   * Push notifications. Legacy used the decommissioned FCM *legacy* HTTP API with a
+   * committed server key; ported jobs use FCM HTTP v1 with a service-account JSON.
+   * Pushes are no-ops unless ENABLE_PUSH=true and the credentials resolve.
+   */
+  push: {
+    enabled: process.env.ENABLE_PUSH === 'true',
+    // Path to (or inline JSON of) the Firebase service-account credentials.
+    serviceAccountPath: process.env.FCM_SERVICE_ACCOUNT_PATH || '',
+    serviceAccountJson: process.env.FCM_SERVICE_ACCOUNT_JSON || '',
+    projectId: process.env.FCM_PROJECT_ID || '',
+  },
+
+  /**
+   * Background jobs (phase 3). Must be true on EXACTLY ONE PM2 instance — the jobs
+   * mutate slot/booking state and send pushes; double-running double-fires them.
+   */
+  enableCron: process.env.ENABLE_CRON === 'true',
   };
 };
+
+/** Parse a JSON env override, falling back to the built-in default when unset/invalid. */
+function parseJson<T>(raw: string | undefined, fallback: T): T {
+  if (!raw) return fallback;
+  try {
+    return JSON.parse(raw) as T;
+  } catch {
+    throw new Error('BOOKING_FEE_JSON is not valid JSON');
+  }
+}

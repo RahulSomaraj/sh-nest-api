@@ -15,7 +15,9 @@ export type AdministratorDocument = HydratedDocument<Administrator> & {
 const stripSecrets = (_doc: unknown, ret: Record<string, any>) => {
   delete ret.password;
   delete ret.activationCode;
+  delete ret.activationCodeExpiresAt;
   delete ret.autoLoginCode;
+  delete ret.autoLoginCodeExpiresAt;
   return ret;
 };
 
@@ -44,8 +46,16 @@ export class Administrator {
   @Prop({ select: false })
   activationCode: string;
 
+  // audit (auth hardening): TTL for the activation code; checked in onboarding/verify.
+  @Prop({ select: false, type: Date })
+  activationCodeExpiresAt: Date;
+
   @Prop({ select: false })
   autoLoginCode: string;
+
+  // audit (auth hardening): TTL for the auto-login token; checked in auth.autoLogin.
+  @Prop({ select: false, type: Date })
+  autoLoginCodeExpiresAt: Date;
 
   @Prop()
   contact_person: string;

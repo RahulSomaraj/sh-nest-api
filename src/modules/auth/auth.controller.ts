@@ -7,6 +7,7 @@ import {
   Req,
   UseGuards,
 } from '@nestjs/common';
+import { Throttle } from '@nestjs/throttler';
 import { AuthService } from './auth.service';
 import { LocalAuthGuard } from './guards/local-auth.guard';
 import { JwtAuthGuard } from './guards/jwt-auth.guard';
@@ -30,6 +31,8 @@ export class AuthController {
     return { status: 1, message: 'Ping success' };
   }
 
+  // audit (auth hardening): tight per-endpoint throttle to blunt credential brute force.
+  @Throttle({ default: { limit: 5, ttl: 60_000 } })
   @UseGuards(LocalAuthGuard)
   @HttpCode(200)
   @Post('login')
@@ -37,6 +40,8 @@ export class AuthController {
     return this.authService.buildLoginResponse(req.user);
   }
 
+  // audit (auth hardening): throttle auto-login token attempts.
+  @Throttle({ default: { limit: 10, ttl: 60_000 } })
   @HttpCode(200)
   @Post('auto-login')
   autoLogin(@Body() dto: AutoLoginDto) {
@@ -56,6 +61,8 @@ export class AuthController {
     return {};
   }
 
+  // audit (auth hardening): throttle to prevent reset-spam / email enumeration probing.
+  @Throttle({ default: { limit: 3, ttl: 60_000 } })
   @HttpCode(200)
   @Post('reset-password')
   resetPassword(@Body() dto: ResetPasswordDto) {

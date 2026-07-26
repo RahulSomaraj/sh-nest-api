@@ -1,6 +1,8 @@
 import { ForbiddenException, HttpException } from '@nestjs/common';
 import { RoomsService } from './rooms.service';
-import { mockQuery, userWithPermissions } from '../../testing/mocks';
+import { mockQuery, userWithPermissions, mockConnection } from '../../testing/mocks';
+
+const withSession = expect.objectContaining({ session: expect.anything() });
 
 /**
  * Module: rooms (audit A6)
@@ -51,6 +53,7 @@ describe('Module: rooms (A6)', () => {
       userBookingModel,
       propertyModel,
       mailService,
+      mockConnection(),
     );
     return { service, roomModel, bookingModel, bookingLogModel, userBookingModel, propertyModel };
   };
@@ -112,13 +115,14 @@ describe('Module: rooms (A6)', () => {
     it('cleans availability docs + logs and detaches from the property on delete', async () => {
       const b = build({ referencingBookings: 0 });
       await b.service.remove(ROOM_ID);
-      expect(b.bookingModel.deleteMany).toHaveBeenCalledWith({ room: ROOM_ID });
-      expect(b.bookingLogModel.deleteMany).toHaveBeenCalledWith({ room: ROOM_ID });
+      expect(b.bookingModel.deleteMany).toHaveBeenCalledWith({ room: ROOM_ID }, withSession);
+      expect(b.bookingLogModel.deleteMany).toHaveBeenCalledWith({ room: ROOM_ID }, withSession);
       expect(b.propertyModel.updateOne).toHaveBeenCalledWith(
         { _id: OWNED_PROP },
         { $pull: { rooms: ROOM_ID } },
+        withSession,
       );
-      expect(b.roomModel.deleteOne).toHaveBeenCalledWith({ _id: ROOM_ID });
+      expect(b.roomModel.deleteOne).toHaveBeenCalledWith({ _id: ROOM_ID }, withSession);
     });
   });
 

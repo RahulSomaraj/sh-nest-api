@@ -2,6 +2,10 @@ import { Injectable } from '@nestjs/common';
 import { InjectModel } from '@nestjs/mongoose';
 import { Model, Types } from 'mongoose';
 import { User, UserDocument } from './schemas/user.schema';
+import { escapeRegex } from '../../common/util/query.util';
+import { cached } from '../../common/cache/ttl-cache';
+import * as bcrypt from 'bcrypt';
+import * as generator from 'generate-password';
 
 const resourcePopulations: any[] = [];
 
@@ -42,9 +46,11 @@ export class UsersService {
     const keyword = query.q;
     const where: any = {};
     if (keyword) {
+      // audit C-3: escape user input to prevent ReDoS / regex injection.
+      const safe = escapeRegex(keyword);
       where.$or = [
-        { name: new RegExp(keyword, 'i') },
-        { email: new RegExp(keyword, 'i') },
+        { name: { $regex: safe, $options: 'i' } },
+        { email: { $regex: safe, $options: 'i' } },
       ];
     }
 
@@ -98,7 +104,8 @@ export class UsersService {
     ];
 
     const [countries, list, itemCount] = await Promise.all([
-      this.countryModel.find({}),
+      // audit perf: countries change rarely — cache the full list for 5 min.
+      cached('ref:countries', 300_000, () => this.countryModel.find({}).lean().exec()),
       this.userModel.aggregate(aggregateQuery).exec(),
       this.userModel.countDocuments(where),
     ]);
@@ -198,5 +205,25 @@ export class UsersService {
   /** DELETE /users/:id */
   async remove(id: string) {
     return this.userModel.deleteOne({ _id: id }).exec();
+  }
+
+  /**
+   * POST /users — admin-created user. Mirrors administrators.create(): a random password is
+   * generated + hashed server-side (the create form has no password field), isGuestUser
+   * defaults to 0 (a real, non-guest user), and empty city/country are dropped. The hashed
+   * password is stripped from the response. A duplicate email surfaces via the global
+   * exception filter (unique index on email).
+   */
+  async create(resourceData: any) {
+    const password = generator.generate({ length: 10, numbers: true });
+    resourceData.password = bcrypt.hashSync(password, 10);
+    if (typeof resourceData.isGuestUser === 'undefined') resourceData.isGuestUser = 0;
+    if (!resourceData.city) delete resourceData.city;
+    if (!resourceData.country) delete resourceData.country;
+
+    const resource = await new this.userModel(resourceData).save();
+    const obj = resource.toObject();
+    delete obj.password;
+    return obj;
   }
 }

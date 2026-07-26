@@ -71,9 +71,17 @@ export class AuthService {
       .populate('role')
       .select('+email')
       .select('+password')
+      .select('+autoLoginCodeExpiresAt')
       .exec();
 
     if (!administrator) {
+      return { status: 0, message: 'Invalid Login token!' };
+    }
+
+    // audit (auth hardening): reject an expired auto-login token (legacy tokens without
+    // an expiry remain valid for backward compatibility).
+    const exp = (administrator as any).autoLoginCodeExpiresAt;
+    if (exp && new Date(exp) < new Date()) {
       return { status: 0, message: 'Invalid Login token!' };
     }
 
@@ -83,7 +91,9 @@ export class AuthService {
     }
 
     const token = this.signToken(administrator);
+    // audit (auth hardening): single-use — clear the token and its expiry after login.
     administrator.set('autoLoginCode', '');
+    administrator.set('autoLoginCodeExpiresAt', undefined);
     await administrator.save();
 
     return {

@@ -7,6 +7,7 @@ import {
   HttpStatus,
   Param,
   Post,
+  Put,
   Query,
   Req,
   UseGuards,
@@ -15,6 +16,7 @@ import { BookingsService } from './bookings.service';
 import { JwtAuthGuard } from '../auth/guards/jwt-auth.guard';
 import { PermissionsGuard } from '../../common/auth/permissions.guard';
 import { RequirePermissions } from '../../common/auth/permissions.decorator';
+import { UpdateBookingGuestDto } from './dto/update-booking-guest.dto';
 
 /**
  * Port of stayhopper/admin/controllers/v2/bookings.js -> /admin/v2/bookings
@@ -34,6 +36,22 @@ export class BookingsController {
   @Get()
   list(@Req() req: any, @Query() query: any) {
     return this.bookingsService.list(query, req.user, this.perms(req));
+  }
+
+  // Guest-details-only edit. Owner-scoped in the service; no dates/room/status/amount changes.
+  @Put(':id')
+  async modify(@Req() req: any, @Param('id') id: string, @Body() dto: UpdateBookingGuestDto) {
+    const r = await this.bookingsService.modifyGuest(id, dto, this.perms(req), req.user);
+    if ((r as any).notFound) {
+      throw new HttpException({ message: 'Bookings does not exist' }, HttpStatus.NOT_FOUND);
+    }
+    if ((r as any).badRequest) {
+      throw new HttpException(
+        { message: 'No guest details provided to update' },
+        HttpStatus.BAD_REQUEST,
+      );
+    }
+    return r;
   }
 
   // audit A7: req.user passed through so the service can owner-scope by-id workflows.

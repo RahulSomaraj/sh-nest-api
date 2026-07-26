@@ -1,7 +1,8 @@
 import { HttpException, HttpStatus, Injectable } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
-import { InjectModel } from '@nestjs/mongoose';
-import { Model } from 'mongoose';
+import { InjectModel, InjectConnection } from '@nestjs/mongoose';
+import { Connection, Model } from 'mongoose';
+import { runInTransaction } from '../../common/db/transaction.util';
 import * as bcrypt from 'bcrypt';
 import * as generator from 'generate-password';
 import {
@@ -10,6 +11,12 @@ import {
 } from './schemas/administrator.schema';
 import { Role } from './schemas/role.schema';
 import { MailService } from '../../common/mail/mail.service';
+import { escapeRegex } from '../../common/util/query.util';
+import { secureNumericCode, secureToken } from '../../common/util/token.util';
+
+// audit (auth hardening): activation code valid 24h; auto-login token valid 24h.
+const ACTIVATION_TTL_MS = 24 * 60 * 60 * 1000;
+const AUTOLOGIN_TTL_MS = 24 * 60 * 60 * 1000;
 
 const resourcePopulations = [
   { path: 'properties', populate: { path: 'rooms type company rating' } },
@@ -41,6 +48,7 @@ export class AdministratorsService {
     @InjectModel('bookinglogs') private readonly bookingLogModel: Model<any>,
     private readonly config: ConfigService,
     private readonly mailService: MailService,
+    @InjectConnection() private readonly connection: Connection,
   ) {}
 
   /** express-paginate getArrayPages equivalent: sliding window of up to `limit` pages. */
@@ -68,10 +76,12 @@ export class AdministratorsService {
 
     const where: any = {};
     if (keyword) {
+      // audit C-3: escape user input to prevent ReDoS / regex injection.
+      const safe = escapeRegex(keyword);
       where.$or = [
-        { name: new RegExp(keyword, 'i') },
-        { email: new RegExp(keyword, 'i') },
-        { legal_name: new RegExp(keyword, 'i') },
+        { name: { $regex: safe, $options: 'i' } },
+        { email: { $regex: safe, $options: 'i' } },
+        { legal_name: { $regex: safe, $options: 'i' } },
       ];
     }
     if (role) where.role = role;
@@ -98,20 +108,37 @@ export class AdministratorsService {
     ]);
 
     if (shouldGetProperties) {
-      administrators = await Promise.all(
-        administrators.map(async (admin: any) => {
-          admin.properties = await this.propertyModel
-            .find({
-              $or: [
-                { allAdministrators: { $in: [admin._id] } },
-                { administrator: admin._id },
-              ],
-            })
-            .select('_id')
-            .select('name');
-          return admin;
-        }),
-      );
+      // audit N+1: fetch every listed admin's properties in ONE query, then group in
+      // memory, instead of a separate find() per admin (was O(pageSize) round-trips).
+      const adminIds = administrators.map((a: any) => a._id);
+      const props = await this.propertyModel
+        .find({
+          $or: [
+            { allAdministrators: { $in: adminIds } },
+            { administrator: { $in: adminIds } },
+          ],
+        })
+        .select('_id name administrator allAdministrators')
+        .lean();
+
+      const byAdmin = new Map<string, any[]>();
+      const add = (adminId: any, prop: any) => {
+        const key = String(adminId);
+        const bucket = byAdmin.get(key) ?? [];
+        if (!bucket.some((p) => String(p._id) === String(prop._id))) {
+          bucket.push({ _id: prop._id, name: prop.name });
+        }
+        byAdmin.set(key, bucket);
+      };
+      for (const p of props as any[]) {
+        if (p.administrator) add(p.administrator, p);
+        for (const aa of p.allAdministrators || []) add(aa, p);
+      }
+
+      administrators = administrators.map((a: any) => {
+        a.properties = byAdmin.get(String(a._id)) ?? [];
+        return a;
+      });
     } else {
       administrators = administrators.map((a: any) => {
         a.properties = [];
@@ -233,16 +260,21 @@ export class AdministratorsService {
           HttpStatus.BAD_REQUEST,
         );
       }
-      await this.userModel.updateMany(
-        { favourites: { $in: propertyIds } },
-        { $pull: { favourites: { $in: propertyIds } } },
-      );
-      // availability docs + logs carry `property`, so clean by property directly
-      // (goes beyond legacy, which orphaned these).
-      await this.availabilityBookingModel.deleteMany({ property: { $in: propertyIds } });
-      await this.bookingLogModel.deleteMany({ property: { $in: propertyIds } });
-      await this.roomModel.deleteMany({ property_id: { $in: propertyIds } });
-      await this.propertyModel.deleteMany({ _id: { $in: propertyIds } });
+      // audit C-4: cascade delete atomically so a mid-way failure can't orphan the
+      // admin's properties/rooms/bookings or half-delete the graph.
+      await runInTransaction(this.connection, async (session) => {
+        await this.userModel.updateMany(
+          { favourites: { $in: propertyIds } },
+          { $pull: { favourites: { $in: propertyIds } } },
+          { session },
+        );
+        // availability docs + logs carry `property`, so clean by property directly
+        // (goes beyond legacy, which orphaned these).
+        await this.availabilityBookingModel.deleteMany({ property: { $in: propertyIds } }, { session });
+        await this.bookingLogModel.deleteMany({ property: { $in: propertyIds } }, { session });
+        await this.roomModel.deleteMany({ property_id: { $in: propertyIds } }, { session });
+        await this.propertyModel.deleteMany({ _id: { $in: propertyIds } }, { session });
+      });
     }
     return this.administratorModel.deleteOne({ _id: id }).exec();
   }
@@ -306,8 +338,10 @@ export class AdministratorsService {
 
     if (existing) {
       if (existing.get('status') === false) {
-        const code = Math.floor(Math.random() * 9000) + 1000;
-        existing.set('activationCode', String(code));
+        // audit (auth hardening): secure 6-digit code with a 24h TTL.
+        const code = secureNumericCode(6);
+        existing.set('activationCode', code);
+        existing.set('activationCodeExpiresAt', new Date(Date.now() + ACTIVATION_TTL_MS));
         await existing.save();
         resource = existing;
       } else {
@@ -315,7 +349,7 @@ export class AdministratorsService {
       }
     } else {
       let role = '';
-      const code = Math.floor(Math.random() * 9000) + 1000;
+      const code = secureNumericCode(6);
 
       const hotelAdminRole = await this.roleModel.findOne({
         permissions: {
@@ -332,7 +366,8 @@ export class AdministratorsService {
         name: resourceData.name,
         email: resourceData.email,
         password,
-        activationCode: String(code),
+        activationCode: code,
+        activationCodeExpiresAt: new Date(Date.now() + ACTIVATION_TTL_MS),
         status: false,
       };
       if (role) administratorData.role = role;
@@ -363,6 +398,7 @@ export class AdministratorsService {
       .select('+email')
       .select('+password')
       .select('+activationCode')
+      .select('+activationCodeExpiresAt')
       .exec();
 
     if (!existing) {
@@ -373,17 +409,25 @@ export class AdministratorsService {
       };
     }
 
+    // audit (auth hardening): reject on mismatch OR expiry (legacy docs without an
+    // expiry are treated as still valid for backward compatibility).
+    const codeExpiry = existing.get('activationCodeExpiresAt');
+    const expired = codeExpiry && new Date(codeExpiry) < new Date();
     if (
       !resourceData.activationCode ||
-      existing.get('activationCode') !== resourceData.activationCode
+      existing.get('activationCode') !== resourceData.activationCode ||
+      expired
     ) {
-      return { ok: false, message: 'Sorry, the activation code is invalid' };
+      return { ok: false, message: 'Sorry, the activation code is invalid or has expired' };
     }
 
     existing.set('status', true);
     existing.set('activationCode', '');
-    const autoLoginCode = Math.floor(Math.random() * 9000) + 1000;
-    existing.set('autoLoginCode', String(autoLoginCode));
+    existing.set('activationCodeExpiresAt', undefined);
+    // audit (auth hardening): high-entropy single-use auto-login token with a 24h TTL.
+    const autoLoginCode = secureToken(24);
+    existing.set('autoLoginCode', autoLoginCode);
+    existing.set('autoLoginCodeExpiresAt', new Date(Date.now() + AUTOLOGIN_TTL_MS));
     await existing.save();
 
     await this.sendWelcomeEmail(existing._id.toString());

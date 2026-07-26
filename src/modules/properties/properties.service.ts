@@ -1,7 +1,8 @@
 import { HttpException, HttpStatus, Injectable } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
-import { InjectModel } from '@nestjs/mongoose';
-import { Model, Types } from 'mongoose';
+import { InjectModel, InjectConnection } from '@nestjs/mongoose';
+import { Connection, Model, Types } from 'mongoose';
+import { runInTransaction } from '../../common/db/transaction.util';
 import { basename } from 'path';
 import { promises as fsp } from 'fs';
 import sharp from 'sharp';
@@ -10,6 +11,8 @@ import {
   ownedPropertyIds,
   PROPERTY_SCOPE,
 } from '../../common/auth/owner-scope';
+import { escapeRegex } from '../../common/util/query.util';
+import { cached } from '../../common/cache/ttl-cache';
 
 const populations = [
   { path: 'rating' },
@@ -45,6 +48,7 @@ export class PropertiesService {
     @InjectModel('bookings') private readonly availabilityBookingModel: Model<any>,
     @InjectModel('bookinglogs') private readonly bookingLogModel: Model<any>,
     private readonly config: ConfigService,
+    @InjectConnection() private readonly connection: Connection,
   ) {}
 
   private buildPages(basePath: string, limit: number, pageCount: number, currentPage: number) {
@@ -80,7 +84,8 @@ export class PropertiesService {
     }
 
     if (query.q) {
-      pushAnd({ $or: [{ name: new RegExp(query.q, 'i') }] });
+      // audit C-3: escape user input to prevent ReDoS / regex injection.
+      pushAnd({ $or: [{ name: { $regex: escapeRegex(query.q), $options: 'i' } }] });
     }
 
     if (query.company) {
@@ -129,14 +134,20 @@ export class PropertiesService {
     return where;
   }
 
-  private async getExtraResourceInformation(resource: any) {
-    const rooms = await this.roomModel.aggregate([
-      { $match: { property_id: new Types.ObjectId(resource._id) } },
+  /**
+   * audit N+1: compute total_rooms for the whole page in a SINGLE aggregation, keyed by
+   * property id, instead of running one aggregate per property (was O(pageSize) round-trips).
+   */
+  private async attachTotalRooms(list: any[]): Promise<any[]> {
+    if (!list.length) return list;
+    const ids = list.map((r: any) => new Types.ObjectId(r._id));
+    const grouped = await this.roomModel.aggregate([
+      { $match: { property_id: { $in: ids } } },
       { $group: { _id: '$property_id', totalRooms: { $sum: '$number_rooms' } } },
-      { $limit: 1 },
     ]);
-    resource.total_rooms = rooms.length > 0 ? rooms[0].totalRooms : 0;
-    return resource;
+    const byId = new Map(grouped.map((g: any) => [String(g._id), g.totalRooms]));
+    for (const r of list) r.total_rooms = byId.get(String(r._id)) ?? 0;
+    return list;
   }
 
   async list(query: any, user: any, permissions: string[], basePath = '/admin/v2/properties') {
@@ -171,7 +182,8 @@ export class PropertiesService {
             .select('_id name legal_name')
             .lean()
         : Promise.resolve([]),
-      this.countryModel.find({}).lean(),
+      // audit perf: countries change rarely — cache the full list for 5 min.
+      cached('ref:countries', 300_000, () => this.countryModel.find({}).lean().exec()),
       this.propertyModel
         .find(where)
         .populate(populations)
@@ -183,7 +195,7 @@ export class PropertiesService {
       this.propertyModel.countDocuments(where),
     ]);
 
-    list = await Promise.all(list.map((r: any) => this.getExtraResourceInformation(r)));
+    list = await this.attachTotalRooms(list);
 
     const pageCount = Math.ceil(itemCount / limit);
     return {
@@ -351,14 +363,19 @@ export class PropertiesService {
         HttpStatus.BAD_REQUEST,
       );
     }
-    await this.userModel.updateMany(
-      { favourites: id },
-      { $pull: { favourites: id } },
-    );
-    await this.availabilityBookingModel.deleteMany({ property: id });
-    await this.bookingLogModel.deleteMany({ property: id });
-    await this.roomModel.deleteMany({ property_id: id });
-    return this.propertyModel.deleteOne({ _id: id }).exec();
+    // audit C-4: cascade delete atomically — all-or-nothing, so a mid-way failure
+    // can't leave orphaned rooms/bookings/logs or a half-deleted property graph.
+    return runInTransaction(this.connection, async (session) => {
+      await this.userModel.updateMany(
+        { favourites: id },
+        { $pull: { favourites: id } },
+        { session },
+      );
+      await this.availabilityBookingModel.deleteMany({ property: id }, { session });
+      await this.bookingLogModel.deleteMany({ property: id }, { session });
+      await this.roomModel.deleteMany({ property_id: id }, { session });
+      return this.propertyModel.deleteOne({ _id: id }, { session }).exec();
+    });
   }
 
   // ---- Nearby ----

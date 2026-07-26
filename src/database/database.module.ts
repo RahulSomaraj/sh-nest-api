@@ -13,12 +13,21 @@ import { MongooseModule } from '@nestjs/mongoose';
       inject: [ConfigService],
       useFactory: (config: ConfigService) => {
         const mongo = config.get('mongo');
+        // audit DB: don't build indexes automatically in production — index builds on a
+        // hot collection can block. Prod builds them explicitly via `npm run indexes:sync`
+        // (scripts/sync-indexes.ts). In dev/staging autoIndex stays on for convenience.
+        // Override with MONGO_AUTOINDEX=true|false if you need to force it.
+        const autoIndex =
+          process.env.MONGO_AUTOINDEX !== undefined
+            ? process.env.MONGO_AUTOINDEX === 'true'
+            : process.env.NODE_ENV !== 'production';
         return {
           uri: mongo.url,
           user: mongo.username || undefined,
           pass: mongo.password || undefined,
           authSource: mongo.authSource,
           replicaSet: mongo.replicaSet,
+          autoIndex,
         };
       },
     }),

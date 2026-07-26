@@ -6,6 +6,7 @@ import {
   HttpException,
   HttpStatus,
   Param,
+  Post,
   Put,
   Query,
   UseGuards,
@@ -15,11 +16,13 @@ import { JwtAuthGuard } from '../auth/guards/jwt-auth.guard';
 import { PermissionsGuard } from '../../common/auth/permissions.guard';
 import { RequirePermissions } from '../../common/auth/permissions.decorator';
 import { UpdateUserDto } from './dto/update-user.dto';
+import { CreateUserDto } from './dto/create-user.dto';
 
 /**
  * Port of stayhopper/admin/controllers/v2/users.js -> /admin/v2/users
- * Live routes only: GET /, GET /:id, PUT /:id, DELETE /:id.
- * (Legacy POST create route is commented out in the source and is intentionally omitted.)
+ * Live routes: GET /, POST /, GET /:id, PUT /:id, DELETE /:id.
+ * (Legacy POST create was commented out in the source; re-added to serve the sh-account
+ * user-create form. Mirrors administrators.create(): password generated + hashed server-side.)
  * All routes require an authenticated administrator with LIST_USERS.
  */
 @Controller('users')
@@ -31,6 +34,11 @@ export class UsersController {
   @Get()
   list(@Query() query: any) {
     return this.usersService.list(query);
+  }
+
+  @Post()
+  create(@Body() dto: CreateUserDto) {
+    return this.usersService.create({ ...dto });
   }
 
   @Get(':id')

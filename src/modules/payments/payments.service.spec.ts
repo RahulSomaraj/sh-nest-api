@@ -46,10 +46,14 @@ describe('Module: payments (A8)', () => {
   const build = (booking: any) => {
     const userBookingModel: any = {
       findOne: jest.fn(() => mockQuery(booking)),
-      updateOne: jest.fn().mockResolvedValue({}),
+      // audit C-1/C-4: capture/return now use an idempotent conditional update whose
+      // modifiedCount decides whether to proceed; return 1 so the happy path runs.
+      updateOne: jest.fn().mockResolvedValue({ modifiedCount: 1 }),
     };
     const invoiceModel: any = { findOne: jest.fn(() => mockQuery(null)) };
     const roomModel: any = {
+      // audit N+1: room types are now resolved with a single find({ _id: { $in } }).
+      find: jest.fn(() => mockQuery([{ _id: ROOM_ID, room_type: { name: 'Deluxe' } }])),
       findOne: jest.fn(() => mockQuery({ _id: ROOM_ID, room_type: { name: 'Deluxe' } })),
     };
     // Empty container URL -> containerPost short-circuits to null (no fetch in tests).
@@ -73,7 +77,7 @@ describe('Module: payments (A8)', () => {
       await flushPromises();
 
       expect(b.userBookingModel.updateOne).toHaveBeenCalledWith(
-        { _id: BOOKING_ID },
+        { _id: BOOKING_ID, hotel_approved: { $ne: 1 } },
         { $set: { paid: 1, hotel_approved: 1 } },
       );
       expect(b.mailService.sendCapturedPaymentEmail).toHaveBeenCalledWith(
@@ -122,7 +126,7 @@ describe('Module: payments (A8)', () => {
 
       expect(result).toEqual({ status: 1 });
       expect(b.userBookingModel.updateOne).toHaveBeenCalledWith(
-        { _id: BOOKING_ID },
+        { _id: BOOKING_ID, hotel_cancelled: { $ne: 1 }, hotel_approved: { $ne: 1 } },
         { $set: { paid: 0, hotel_cancelled: 1 } },
       );
       expect(b.mailService.sendCancelledPaymentEmail).toHaveBeenCalledWith(

@@ -1,3 +1,4 @@
+import { BadRequestException } from '@nestjs/common';
 import { Model } from 'mongoose';
 
 export interface CrudOptions {
@@ -37,7 +38,13 @@ export class BaseCrudService {
   private prepareWhere(query: any) {
     const where: any = {};
     for (const key of this.options.filters || []) {
-      if (query[key] !== undefined && query[key] !== '') where[key] = query[key];
+      const value = query[key];
+      if (value === undefined || value === '') continue;
+      // audit C-2: only accept scalar filter values; reject operator-injection objects.
+      if (typeof value !== 'string' && typeof value !== 'number') {
+        throw new BadRequestException(`Invalid ${key}`);
+      }
+      where[key] = value;
     }
     return where;
   }

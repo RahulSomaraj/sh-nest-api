@@ -20,6 +20,8 @@ import { ReferenceModelsModule } from '../../common/reference/reference.module';
 import { JwtAuthGuard } from '../auth/guards/jwt-auth.guard';
 import { PermissionsGuard } from '../../common/auth/permissions.guard';
 import { RequirePermissions } from '../../common/auth/permissions.decorator';
+import { JobsModule } from '../jobs/jobs.module';
+import { InvoicesJobService } from '../jobs/invoices-job.service';
 
 /**
  * Port of stayhopper/admin/controllers/v2/invoices.js -> /admin/v2/invoices
@@ -30,7 +32,10 @@ import { RequirePermissions } from '../../common/auth/permissions.decorator';
 @Controller('invoices')
 @UseGuards(JwtAuthGuard)
 export class InvoicesController {
-  constructor(private readonly service: InvoicesService) {}
+  constructor(
+    private readonly service: InvoicesService,
+    private readonly invoicesJobService: InvoicesJobService,
+  ) {}
 
   private perms(req: any): string[] {
     return req.user?.role?.permissions || [];
@@ -39,6 +44,29 @@ export class InvoicesController {
   @Get()
   list(@Req() req: any, @Query() query: any) {
     return this.service.list(query, req.user, this.perms(req));
+  }
+
+  /**
+   * MIGRATION.md C9 — manual monthly invoice generation.
+   *
+   * Replaces the legacy `GET /generate-invoice` (mounted at the app root in
+   * `sh-api/index.js:80` with **no authentication at all** — anyone could regenerate and
+   * re-email every property's invoices). Declared before `:id` so it isn't swallowed by
+   * the parameterised route.
+   *
+   * Query: `from` / `to` (`DD-MM-YYYY`, whole months) or neither for last month;
+   * `disableEmailToProperty=true` to generate without notifying properties.
+   */
+  @UseGuards(PermissionsGuard)
+  @RequirePermissions('LIST_ALL_INVOICES')
+  @Post('generate')
+  generate(@Query() query: any) {
+    return this.invoicesJobService.generateInvoices({
+      date: query.date,
+      from: query.from,
+      to: query.to,
+      disableEmailToProperty: query.disableEmailToProperty === 'true',
+    });
   }
 
   @UseGuards(PermissionsGuard)
@@ -93,6 +121,8 @@ export class InvoicesController {
   imports: [
     ReferenceModelsModule,
     MongooseModule.forFeature([{ name: 'invoices', schema: InvoiceSchema }]),
+    // Supplies InvoicesJobService for the manual `POST /generate` trigger (C9).
+    JobsModule,
   ],
   controllers: [InvoicesController],
   providers: [InvoicesService],
