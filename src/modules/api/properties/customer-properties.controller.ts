@@ -9,53 +9,13 @@ import {
   UseGuards,
 } from '@nestjs/common';
 import { ApiBearerAuth, ApiTags } from '@nestjs/swagger';
-import { IsBoolean, IsMongoId, IsNumber, IsOptional, IsString } from 'class-validator';
 import { CustomerPropertiesService } from './customer-properties.service';
 import { UserAuthGuard } from '../auth/guards/user-auth.guard';
 import { CountryAwareRequest } from '../../../common/middleware/country-selection.middleware';
+import { PropertyDetailDto, PropertySearchDto } from './dto/customer-properties.dto';
 
-/**
- * Search/detail bodies. Legacy validated nothing beyond the four date/time fields on
- * `/search`, so everything else stays optional to avoid turning a legacy 200 into a 400.
- */
-export class PropertySearchDto {
-  @IsOptional() @IsString() checkinDate?: string;
-  @IsOptional() @IsString() checkoutDate?: string;
-  @IsOptional() @IsString() checkinTime?: string;
-  @IsOptional() @IsString() checkoutTime?: string;
-  @IsOptional() @IsString() bookingType?: string;
-  @IsOptional() @IsString() location?: string;
-  @IsOptional() @IsString() cityId?: string;
-  @IsOptional() @IsString() countryId?: string;
-  @IsOptional() @IsNumber() numberAdults?: number;
-  @IsOptional() @IsNumber() numberChildren?: number;
-  @IsOptional() @IsNumber() numberRooms?: number;
-  @IsOptional() @IsString() properties?: string;
-  @IsOptional() @IsString() rooms?: string;
-  @IsOptional() @IsBoolean() isTestingRates?: boolean;
-  @IsOptional() @IsNumber() limit?: number;
-  @IsOptional() @IsString() sort?: string;
-  @IsOptional() @IsString() orderBy?: string;
-  @IsOptional() @IsNumber() priceMin?: number;
-  @IsOptional() @IsNumber() priceMax?: number;
-  @IsOptional() @IsString() propertyTypes?: string;
-  @IsOptional() @IsString() propertyRatings?: string;
-  @IsOptional() @IsString() roomTypes?: string;
-  @IsOptional() @IsString() bedTypes?: string;
-  @IsOptional() @IsString() amenities?: string;
-}
-
-export class PropertyDetailDto {
-  @IsOptional() @IsString() checkinDate?: string;
-  @IsOptional() @IsString() checkoutDate?: string;
-  @IsOptional() @IsString() checkinTime?: string;
-  @IsOptional() @IsString() checkoutTime?: string;
-  @IsOptional() @IsString() bookingType?: string;
-  @IsOptional() @IsString() location?: string;
-  @IsOptional() @IsNumber() numberAdults?: number;
-  @IsOptional() @IsNumber() numberChildren?: number;
-  @IsOptional() @IsNumber() numberRooms?: number;
-}
+// Re-exported so existing imports from the controller keep working.
+export { PropertySearchDto, PropertyDetailDto };
 
 /** P1–P4 — legacy `controllers/api/v2/properties.js`, mounted at `/api/properties`. */
 @ApiTags('customer: properties')

@@ -1,3 +1,4 @@
+import { ApiPropertyOptional } from '@nestjs/swagger';
 import { IsEmail, IsOptional, IsString } from 'class-validator';
 
 /**
@@ -6,22 +7,27 @@ import { IsEmail, IsOptional, IsString } from 'class-validator';
  * on active bookings and `guestInfo` on completed bookings.
  */
 export class UpdateBookingGuestDto {
+  @ApiPropertyOptional()
   @IsOptional()
   @IsString()
   title?: string;
 
+  @ApiPropertyOptional()
   @IsOptional()
   @IsString()
   first_name?: string;
 
+  @ApiPropertyOptional()
   @IsOptional()
   @IsString()
   last_name?: string;
 
+  @ApiPropertyOptional()
   @IsOptional()
   @IsEmail()
   email?: string;
 
+  @ApiPropertyOptional()
   @IsOptional()
   @IsString()
   mobile?: string;

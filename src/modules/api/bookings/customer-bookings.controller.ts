@@ -13,20 +13,11 @@ import {
 import { ApiBearerAuth, ApiTags } from '@nestjs/swagger';
 import { Response } from 'express';
 import { Types } from 'mongoose';
-import { IsOptional, IsString } from 'class-validator';
 import { CustomerBookingsService } from './customer-bookings.service';
 import { UserAuthGuard } from '../auth/guards/user-auth.guard';
 import { CurrentUser } from '../../../common/auth/current-user.decorator';
 import { CountryAwareRequest } from '../../../common/middleware/country-selection.middleware';
-
-class CheckPromoDto {
-  @IsString() promocode: string;
-  @IsOptional() @IsString() email?: string;
-}
-
-class BookIdDto {
-  @IsString() book_id: string;
-}
+import { BookIdDto, CheckPromoDto } from './dto/customer-bookings.dto';
 
 /** B1–B3 — legacy `controllers/api/v2/bookings.js`, mounted at `/api/bookings`. */
 @ApiTags('customer: bookings')

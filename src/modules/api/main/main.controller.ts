@@ -9,18 +9,10 @@ import {
   UseGuards,
 } from '@nestjs/common';
 import { ApiBearerAuth, ApiTags } from '@nestjs/swagger';
-import { IsOptional, IsString } from 'class-validator';
 import { MainService } from './main.service';
 import { UserAuthGuard } from '../auth/guards/user-auth.guard';
 import { CountryAwareRequest } from '../../../common/middleware/country-selection.middleware';
-
-class CityDto {
-  @IsString() cityId: string;
-}
-
-class CountryDto {
-  @IsOptional() @IsString() countryId?: string;
-}
+import { CityDto, CountryDto } from './dto/main.dto';
 
 /** M1–M13 — legacy `controllers/api/v2/main.js`, mounted at `/api/main`. */
 @ApiTags('customer: main')

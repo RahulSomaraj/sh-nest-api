@@ -1,4 +1,5 @@
-import { IsMongoId, IsOptional, IsString } from 'class-validator';
+import { ApiProperty, ApiPropertyOptional } from "@nestjs/swagger";
+import { IsMongoId, IsOptional, IsString } from "class-validator";
 
 /**
  * Legacy validated none of these bodies (Mongoose schema validation was the only gate),
@@ -7,59 +8,59 @@ import { IsMongoId, IsOptional, IsString } from 'class-validator';
  */
 
 export class RegisterUserDto {
-  @IsOptional() @IsString() name?: string;
-  @IsOptional() @IsString() email?: string;
-  @IsOptional() @IsString() mobile?: string;
-  @IsOptional() @IsString() country?: string;
-  @IsOptional() @IsString() dateOfBirth?: string;
-  @IsOptional() @IsString() gender?: string;
-  @IsOptional() @IsString() device_type?: string;
+  @ApiPropertyOptional() @IsOptional() @IsString() name?: string;
+  @ApiPropertyOptional() @IsOptional() @IsString() email?: string;
+  @ApiPropertyOptional() @IsOptional() @IsString() mobile?: string;
+  @ApiPropertyOptional() @IsOptional() @IsString() country?: string;
+  @ApiPropertyOptional() @IsOptional() @IsString() dateOfBirth?: string;
+  @ApiPropertyOptional() @IsOptional() @IsString() gender?: string;
+  @ApiPropertyOptional() @IsOptional() @IsString() device_type?: string;
 }
 
 export class CheckLoginDto {
-  @IsOptional() @IsString() username?: string;
-  @IsOptional() @IsString() password?: string;
+  @ApiPropertyOptional() @IsOptional() @IsString() username?: string;
+  @ApiPropertyOptional() @IsOptional() @IsString() password?: string;
 }
 
 export class CustomerLoginDto {
-  @IsString() email: string;
-  @IsString() password: string;
+  @ApiProperty() @IsString() email: string;
+  @ApiProperty() @IsString() password: string;
 }
 
 export class ResetPasswordDto {
-  @IsOptional() @IsString() email?: string;
+  @ApiPropertyOptional() @IsOptional() @IsString() email?: string;
 }
 
 export class EditProfileDto {
-  @IsOptional() @IsString() name?: string;
-  @IsOptional() @IsString() mobile?: string;
-  @IsOptional() @IsString() email?: string;
-  @IsOptional() @IsString() gender?: string;
-  @IsOptional() @IsString() country?: string;
-  @IsOptional() @IsString() dateOfBirth?: string;
+  @ApiPropertyOptional() @IsOptional() @IsString() name?: string;
+  @ApiPropertyOptional() @IsOptional() @IsString() mobile?: string;
+  @ApiPropertyOptional() @IsOptional() @IsString() email?: string;
+  @ApiPropertyOptional() @IsOptional() @IsString() gender?: string;
+  @ApiPropertyOptional() @IsOptional() @IsString() country?: string;
+  @ApiPropertyOptional() @IsOptional() @IsString() dateOfBirth?: string;
 }
 
 export class ChangePasswordDto {
-  @IsOptional() @IsString() newpassword?: string;
+  @ApiPropertyOptional() @IsOptional() @IsString() newpassword?: string;
 }
 
 export class FbLoginDto {
-  @IsOptional() @IsString() name?: string;
-  @IsOptional() @IsString() email?: string;
-  @IsOptional() @IsString() image?: string;
-  @IsOptional() @IsString() device_type?: string;
+  @ApiPropertyOptional() @IsOptional() @IsString() name?: string;
+  @ApiPropertyOptional() @IsOptional() @IsString() email?: string;
+  @ApiPropertyOptional() @IsOptional() @IsString() image?: string;
+  @ApiPropertyOptional() @IsOptional() @IsString() device_type?: string;
 }
 
 export class NotifyCredDto {
-  @IsOptional() @IsMongoId() user_id?: string;
-  @IsOptional() @IsString() device_type?: string;
-  @IsOptional() @IsString() device_token?: string;
+  @ApiPropertyOptional() @IsOptional() @IsMongoId() user_id?: string;
+  @ApiPropertyOptional() @IsOptional() @IsString() device_type?: string;
+  @ApiPropertyOptional() @IsOptional() @IsString() device_token?: string;
 }
 
 export class FavoritesDto {
-  @IsMongoId() propertyId: string;
+  @ApiProperty() @IsMongoId() propertyId: string;
 }
 
 export class GuestUserDto {
-  @IsOptional() @IsString() email?: string;
+  @ApiPropertyOptional() @IsOptional() @IsString() email?: string;
 }

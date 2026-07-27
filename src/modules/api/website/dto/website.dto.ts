@@ -1,3 +1,4 @@
+import { ApiProperty, ApiPropertyOptional } from '@nestjs/swagger';
 import { IsMongoId, IsNumber, IsOptional, IsString } from 'class-validator';
 
 /**
@@ -7,46 +8,46 @@ import { IsMongoId, IsNumber, IsOptional, IsString } from 'class-validator';
  */
 
 export class WebsiteRegisterDto {
-  @IsOptional() @IsString() name?: string;
-  @IsOptional() @IsString() email_address?: string;
-  @IsOptional() @IsString() phone_number?: string;
-  @IsOptional() @IsString() hotel_name?: string;
-  @IsOptional() @IsString() city?: string;
+  @ApiPropertyOptional() @IsOptional() @IsString() name?: string;
+  @ApiPropertyOptional() @IsOptional() @IsString() email_address?: string;
+  @ApiPropertyOptional() @IsOptional() @IsString() phone_number?: string;
+  @ApiPropertyOptional() @IsOptional() @IsString() hotel_name?: string;
+  @ApiPropertyOptional() @IsOptional() @IsString() city?: string;
 }
 
 export class WebsiteContactDto {
-  @IsOptional() @IsString() name?: string;
-  @IsOptional() @IsString() email_address?: string;
-  @IsOptional() @IsString() phone_number?: string;
-  @IsOptional() @IsString() address?: string;
-  @IsOptional() @IsString() message?: string;
+  @ApiPropertyOptional() @IsOptional() @IsString() name?: string;
+  @ApiPropertyOptional() @IsOptional() @IsString() email_address?: string;
+  @ApiPropertyOptional() @IsOptional() @IsString() phone_number?: string;
+  @ApiPropertyOptional() @IsOptional() @IsString() address?: string;
+  @ApiPropertyOptional() @IsOptional() @IsString() message?: string;
 }
 
 export class WebsiteSubscribeDto {
   // Not @IsEmail: Mailchimp itself validates and the website relies on the exact
   // "Please provide a valid email address." message it returns.
-  @IsOptional() @IsString() email_address?: string;
+  @ApiPropertyOptional() @IsOptional() @IsString() email_address?: string;
 }
 
 export class ContactUsDto {
-  @IsOptional() @IsString() name?: string;
-  @IsOptional() @IsString() email?: string;
-  @IsOptional() @IsString() subject?: string;
-  @IsOptional() @IsString() message?: string;
+  @ApiPropertyOptional() @IsOptional() @IsString() name?: string;
+  @ApiPropertyOptional() @IsOptional() @IsString() email?: string;
+  @ApiPropertyOptional() @IsOptional() @IsString() subject?: string;
+  @ApiPropertyOptional() @IsOptional() @IsString() message?: string;
 }
 
 export class CreateUserRatingDto {
-  @IsMongoId() property: string;
+  @ApiProperty() @IsMongoId() property: string;
 
-  @IsOptional() @IsString() comment?: string;
+  @ApiPropertyOptional() @IsOptional() @IsString() comment?: string;
 
-  @IsMongoId() ub_id: string;
+  @ApiProperty() @IsMongoId() ub_id: string;
 
-  @IsOptional() @IsString() booking_id?: string;
+  @ApiPropertyOptional() @IsOptional() @IsString() booking_id?: string;
 
-  @IsOptional() @IsNumber() value?: number;
+  @ApiPropertyOptional() @IsOptional() @IsNumber() value?: number;
 }
 
 export class ReadNotificationDto {
-  @IsMongoId() id: string;
+  @ApiProperty() @IsMongoId() id: string;
 }

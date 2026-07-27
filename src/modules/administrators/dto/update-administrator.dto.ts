@@ -1,4 +1,4 @@
-import { PartialType } from '@nestjs/mapped-types';
+import { PartialType } from '@nestjs/swagger';
 import { CreateAdministratorDto } from './create-administrator.dto';
 
 // modify() does findOneAndUpdate($set, body); all fields optional.
