@@ -83,6 +83,51 @@ describe('HyperGuestClientService', () => {
     expect(hotels).toEqual([{ hotel_id: 19912 }]);
   });
 
+  // Full-feed hardening: the serial sync loop hit runs of AbortSignal timeouts on
+  // adjacent hotel ids (supplier throttling), and with no retry each one silently
+  // dropped that hotel for the whole run.
+  it('retries a timed-out static request and succeeds on the next attempt', async () => {
+    fetchMock
+      .mockRejectedValueOnce(
+        Object.assign(new Error('This operation was aborted'), { name: 'AbortError' }),
+      )
+      .mockResolvedValueOnce(fetchResponse({ name: 'Hotel 19912' }));
+    const client = new HyperGuestClientService(configWith());
+
+    const staticData = await client.getPropertyStatic(19912);
+
+    expect(fetchMock).toHaveBeenCalledTimes(2);
+    expect(staticData).toEqual({ name: 'Hotel 19912' });
+  }, 10_000);
+
+  it('retries a 5xx from the static host', async () => {
+    fetchMock
+      .mockResolvedValueOnce(fetchResponse({}, { status: 503 }))
+      .mockResolvedValueOnce(fetchResponse([{ hotel_id: 19912 }]));
+    const client = new HyperGuestClientService(configWith());
+
+    await expect(client.getHotels()).resolves.toEqual([{ hotel_id: 19912 }]);
+    expect(fetchMock).toHaveBeenCalledTimes(2);
+  }, 10_000);
+
+  it('does NOT retry a 4xx — that is a verdict, not a blip', async () => {
+    fetchMock.mockResolvedValue(fetchResponse({ msg: 'not found' }, { status: 404 }));
+    const client = new HyperGuestClientService(configWith());
+
+    await expect(client.getPropertyStatic(19912)).rejects.toThrow('HyperGuest HTTP 404');
+    expect(fetchMock).toHaveBeenCalledTimes(1);
+  });
+
+  it('never retries a booking call — those are not idempotent', async () => {
+    fetchMock.mockRejectedValue(new Error('socket hang up'));
+    const client = new HyperGuestClientService(configWith());
+
+    await expect(client.cancelBooking({ bookingId: 'bk-1' })).rejects.toThrow(
+      'HyperGuest request failed',
+    );
+    expect(fetchMock).toHaveBeenCalledTimes(1);
+  });
+
   it('certification rail: blocks any propertyId except 19912', async () => {
     const client = new HyperGuestClientService(configWith());
 

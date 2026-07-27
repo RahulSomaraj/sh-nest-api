@@ -8,6 +8,42 @@ import { HgPropertyStatic, HgStaticHotel, HgSyncSummary } from './hyperguest.typ
 const KEEP_SYNC_RUNS = 50;
 
 /**
+ * Hotels materialized concurrently per batch (sequential between batches). Each one
+ * is its own property-static round-trip, so the serial loop this replaces ran the
+ * full feed at ~3.5 hotels/sec ≈ 4h. Deliberately NOT an unbounded Promise.all over
+ * 53k — that would open 53k sockets and guarantee supplier throttling. Tune here.
+ */
+const MATERIALIZE_CONCURRENCY = 20;
+
+/**
+ * Per-hotel failures kept in the run doc. The whole summary is one document, and an
+ * unbounded array across a 53k feed can reach the 16MB BSON limit — at which point
+ * the write throws and the run summary is lost exactly when it is most needed.
+ */
+const MAX_STORED_ERRORS = 100;
+
+/** A `running` row older than this is treated as a crashed run, not a live lock. */
+const LOCK_STALE_MS = 6 * 60 * 60 * 1000;
+
+/** MongoDB duplicate-key — here, the run lock already being held. */
+const DUPLICATE_KEY = 11000;
+
+interface HgSyncConfig {
+  enabled: boolean;
+  certification: boolean;
+  certPropertyId: number;
+  systemAdminId: string;
+}
+
+/** The projection of `hg_hotels` the diff needs. */
+interface HgKnownRow {
+  hotel_id: number;
+  last_updated?: string;
+  active?: boolean;
+  property?: Types.ObjectId;
+}
+
+/**
  * HyperGuest static sync (HYPERGUEST_PLAN.md slab B, decision D1).
  *
  * Discovery is a diff: HG offers no webhook, so each run pulls hotels.json and
@@ -26,6 +62,14 @@ const KEEP_SYNC_RUNS = 50;
  *
  * Certification mode: only certPropertyId (19912) is materialized; the rest of
  * the feed is counted as skippedByCertification.
+ *
+ * Full-feed hardening (the defects below only bite with HG_CERTIFICATION=false):
+ *  - the feed repeats hotel_id, so it is deduped to one entry per id before the
+ *    loop — otherwise each repeat created a second property and orphaned the first;
+ *  - hotels are materialized in batches of MATERIALIZE_CONCURRENCY rather than
+ *    strictly serially, per-hotel error isolation unchanged;
+ *  - the run doc is written up front as `running` and checkpointed per batch, so an
+ *    interrupted run is still diagnosable, and it doubles as a cross-instance lock.
  */
 @Injectable()
 export class HyperGuestSyncService {
@@ -45,59 +89,97 @@ export class HyperGuestSyncService {
    * Callers: 6-hourly cron (jobs module) + POST /admin/v2/hyperguest/sync.
    */
   async syncHotels(trigger: 'cron' | 'manual'): Promise<HgSyncSummary | { skipped: string }> {
-    const hg = this.config.get<any>('hyperguest');
+    const hg = this.config.get<HgSyncConfig>('hyperguest');
     if (!hg?.enabled) return { skipped: 'HG_ENABLED != true' };
 
     const startedAt = new Date();
     const summary: HgSyncSummary = {
       trigger,
+      status: 'running',
       startedAt,
       finishedAt: startedAt,
       durationMs: 0,
       feedTotal: 0,
       skippedByCertification: 0,
+      duplicatesCollapsed: 0,
       created: 0,
       updated: 0,
       unpublished: 0,
       unchanged: 0,
       errors: [],
+      errorCount: 0,
       invariantOk: true,
       ok: false,
     };
+
+    // Claim the run lock before any work: the doc goes in as `running` and the
+    // partial unique index rejects a second one. This doubles as the crash-safe
+    // audit trail — an interrupted run leaves a `running` row, not nothing.
+    const runId = await this.acquireRunLock(summary);
+    if (!runId) return { skipped: 'already running' };
 
     try {
       const feed = await this.client.getHotels();
       summary.feedTotal = feed.length;
 
       // Certification: the diff sees the whole feed but only 19912 materializes.
-      const wanted = hg.certification
+      const filtered = hg.certification
         ? feed.filter((h) => h.hotel_id === hg.certPropertyId)
         : feed;
-      summary.skippedByCertification = feed.length - wanted.length;
+      summary.skippedByCertification = feed.length - filtered.length;
 
-      const known = await this.hgHotelModel
+      // HG's feed repeats hotel_id; keep the last entry per id so one id → one
+      // property. Without this every repeat re-entered the create branch (the
+      // pre-loop knownById never learns about ids created during the loop) and
+      // orphaned the property the previous occurrence had just made — 1,658 of
+      // them, 46% of a real full-feed run. Counted separately: a duplicate is not
+      // a certification skip.
+      const wanted = [...new Map(filtered.map((h) => [h.hotel_id, h])).values()];
+      summary.duplicatesCollapsed = filtered.length - wanted.length;
+      if (summary.duplicatesCollapsed > 0) {
+        this.logger.warn(
+          `HG feed repeated ${summary.duplicatesCollapsed} hotel_id(s) — collapsed to last occurrence`,
+        );
+      }
+
+      const known = (await this.hgHotelModel
         .find({}, { hotel_id: 1, last_updated: 1, active: 1, property: 1 })
         .lean()
-        .exec();
-      const knownById = new Map<number, any>(known.map((k: any) => [k.hotel_id, k]));
+        .exec()) as unknown as HgKnownRow[];
+      const knownById = new Map<number, HgKnownRow>(known.map((k) => [k.hotel_id, k]));
       const feedIds = new Set(wanted.map((h) => h.hotel_id));
 
+      // Partition first: an unchanged hotel needs no fetch, so keeping it out of the
+      // batches means concurrency is spent only on hotels that actually do I/O.
+      const pending: Array<{ hotel: HgStaticHotel; existing: HgKnownRow | null }> = [];
       for (const hotel of wanted) {
-        try {
-          const existing = knownById.get(hotel.hotel_id);
-          if (!existing) {
-            await this.materialize(hotel, null);
-            summary.created++;
-          } else if (existing.last_updated !== hotel.last_updated || !existing.active) {
-            await this.materialize(hotel, existing);
-            summary.updated++;
-          } else {
-            summary.unchanged++;
-          }
-        } catch (err) {
-          summary.errors.push({ hotel_id: hotel.hotel_id, message: (err as Error).message });
-          this.logger.error(`sync hotel ${hotel.hotel_id} failed: ${(err as Error).message}`);
+        const existing = knownById.get(hotel.hotel_id);
+        if (!existing) {
+          pending.push({ hotel, existing: null });
+        } else if (existing.last_updated !== hotel.last_updated || !existing.active) {
+          pending.push({ hotel, existing });
+        } else {
+          summary.unchanged++;
         }
+      }
+
+      for (let i = 0; i < pending.length; i += MATERIALIZE_CONCURRENCY) {
+        const batch = pending.slice(i, i + MATERIALIZE_CONCURRENCY);
+        // Per-hotel isolation is unchanged: each task swallows its own failure, so
+        // one bad hotel can never reject the batch or abort the run.
+        await Promise.all(
+          batch.map(async ({ hotel, existing }) => {
+            try {
+              await this.materialize(hotel, existing);
+              if (existing) summary.updated++;
+              else summary.created++;
+            } catch (err) {
+              this.recordError(summary, hotel.hotel_id, (err as Error).message);
+            }
+          }),
+        );
+        // Checkpoint so a run killed mid-flight is still diagnosable.
+        await this.persistProgress(runId, summary);
       }
 
       // Removed: known + active but no longer in the (certification-filtered) feed.
@@ -129,9 +211,13 @@ export class HyperGuestSyncService {
         );
       }
 
-      summary.ok = summary.errors.length === 0 && summary.invariantOk;
+      // errorCount, not errors.length — the stored array is capped at 100.
+      summary.ok = summary.errorCount === 0 && summary.invariantOk;
+      summary.status = 'completed';
     } catch (err) {
-      summary.errors.push({ hotel_id: -1, message: (err as Error).message });
+      this.recordError(summary, -1, (err as Error).message);
+      summary.ok = false;
+      summary.status = 'failed';
       this.logger.error(`HG sync failed: ${(err as Error).message}`);
     }
 
@@ -140,10 +226,12 @@ export class HyperGuestSyncService {
     this.logger.log(
       `HG sync (${trigger}): feed=${summary.feedTotal} new=${summary.created} updated=${summary.updated} ` +
         `unpublished=${summary.unpublished} unchanged=${summary.unchanged} certSkipped=${summary.skippedByCertification} ` +
-        `errors=${summary.errors.length} in ${summary.durationMs}ms`,
+        `duplicates=${summary.duplicatesCollapsed} errors=${summary.errorCount} in ${summary.durationMs}ms`,
     );
 
-    await this.hgSyncRunModel.create(summary);
+    // Terminal update on the row created up front — this also releases the lock,
+    // since the partial unique index only covers status:'running'.
+    await this.hgSyncRunModel.updateOne({ _id: runId }, { $set: summary }).exec();
     await this.pruneRuns();
     return summary;
   }
@@ -156,8 +244,8 @@ export class HyperGuestSyncService {
   // -------------------------------------------------------------------------
 
   /** Fetch static + upsert hg_hotels row + upsert the materialized property. */
-  private async materialize(hotel: HgStaticHotel, existing: any | null): Promise<void> {
-    const hg = this.config.get<any>('hyperguest');
+  private async materialize(hotel: HgStaticHotel, existing: HgKnownRow | null): Promise<void> {
+    const hg = this.config.get<HgSyncConfig>('hyperguest');
     const staticData = await this.client.getPropertyStatic(hotel.hotel_id);
 
     const propertyFields = await this.buildPropertyFields(hotel, staticData);
@@ -262,6 +350,81 @@ export class HyperGuestSyncService {
     if (!aed) throw new Error('HG sync: AED currency row missing — cannot materialize properties');
     this.aedId = aed._id;
     return this.aedId;
+  }
+
+  /**
+   * Insert the `running` row — that insert IS the lock, enforced by the partial
+   * unique index on {status:'running'}. Returns null when another instance holds it.
+   *
+   * Stale rows are reaped first: the app runs multi-instance under PM2 and a run
+   * killed by a deploy would otherwise hold the lock forever and deadlock every
+   * future sync.
+   */
+  private async acquireRunLock(summary: HgSyncSummary): Promise<Types.ObjectId | null> {
+    const staleBefore = new Date(Date.now() - LOCK_STALE_MS);
+    const reaped = await this.hgSyncRunModel
+      .updateMany(
+        { status: 'running', startedAt: { $lt: staleBefore } },
+        { $set: { status: 'failed', ok: false } },
+      )
+      .exec();
+    if (reaped?.modifiedCount) {
+      this.logger.warn(
+        `reaped ${reaped.modifiedCount} stale HG sync run(s) (older than ${LOCK_STALE_MS}ms) — assumed crashed`,
+      );
+    }
+
+    try {
+      // Snapshot: `summary` is mutated for the rest of the run, and this insert must
+      // record the run as it started (status:'running', zeroed counters).
+      const run = await this.hgSyncRunModel.create({ ...summary, errors: [] });
+      return run._id as Types.ObjectId;
+    } catch (err) {
+      if ((err as { code?: number })?.code === DUPLICATE_KEY) {
+        this.logger.warn(`HG sync (${summary.trigger}) skipped — another run is in progress`);
+        return null;
+      }
+      throw err;
+    }
+  }
+
+  /**
+   * Checkpoint the counters onto the running row. Best-effort: a failed checkpoint
+   * is a diagnostics loss, never a reason to abort a multi-hour run.
+   */
+  private async persistProgress(runId: Types.ObjectId, summary: HgSyncSummary): Promise<void> {
+    try {
+      await this.hgSyncRunModel
+        .updateOne(
+          { _id: runId },
+          {
+            $set: {
+              feedTotal: summary.feedTotal,
+              skippedByCertification: summary.skippedByCertification,
+              duplicatesCollapsed: summary.duplicatesCollapsed,
+              created: summary.created,
+              updated: summary.updated,
+              unchanged: summary.unchanged,
+              errors: summary.errors,
+              errorCount: summary.errorCount,
+            },
+          },
+        )
+        .exec();
+    } catch (err) {
+      this.logger.warn(`HG sync progress checkpoint failed: ${(err as Error).message}`);
+    }
+  }
+
+  /** Count every failure; store only the first MAX_STORED_ERRORS of them. */
+  private recordError(summary: HgSyncSummary, hotel_id: number, message: string): void {
+    summary.errorCount++;
+    if (summary.errors.length < MAX_STORED_ERRORS) {
+      summary.errors.push({ hotel_id, message });
+    }
+    if (hotel_id >= 0) {
+      this.logger.error(`sync hotel ${hotel_id} failed: ${message}`);
+    }
   }
 
   private async pruneRuns(): Promise<void> {

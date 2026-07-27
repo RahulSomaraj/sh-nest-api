@@ -305,19 +305,39 @@ export interface HgListBookingsRequest {
 // Sync bookkeeping (hg_sync_runs docs)
 // ---------------------------------------------------------------------------
 
+/**
+ * Run lifecycle. The doc is written as `running` BEFORE the loop so an interrupted
+ * run (crash/deploy/restart mid-flight) still leaves an audit trail, and so a
+ * concurrent run can detect the lock. Terminal states are `completed` / `failed`.
+ */
+export type HgSyncRunStatus = 'running' | 'completed' | 'failed';
+
 export interface HgSyncSummary {
   trigger: 'cron' | 'manual';
+  status: HgSyncRunStatus;
   startedAt: Date;
   finishedAt: Date;
   durationMs: number;
   feedTotal: number;
   /** Hotels excluded by certification mode (everything except 19912). */
   skippedByCertification: number;
+  /**
+   * Repeated hotel_ids collapsed out of the feed before materializing. HG's
+   * hotels.json really does repeat ids; without the dedupe each repeat took the
+   * create branch again and orphaned the previous property (46% of a full run).
+   */
+  duplicatesCollapsed: number;
   created: number;
   updated: number;
   unpublished: number;
   unchanged: number;
+  /**
+   * First MAX_STORED_ERRORS failures only — the full array across a 53k-hotel feed
+   * can approach the 16MB BSON limit, which would throw away the whole summary at
+   * exactly the moment it matters. Use errorCount for the true total.
+   */
   errors: Array<{ hotel_id: number; message: string }>;
+  errorCount: number;
   /** Post-run invariant: active hg_hotels === published HyperGuest properties. */
   invariantOk: boolean;
   ok: boolean;

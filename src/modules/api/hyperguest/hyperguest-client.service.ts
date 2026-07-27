@@ -16,6 +16,12 @@ import {
   toGuestsGrammar,
 } from './hyperguest.types';
 
+/** First retry waits ~500ms; each subsequent one doubles (500 → 1s → 2s). */
+const RETRY_BASE_MS = 500;
+
+/** Static-host calls are idempotent GETs, so they are safe to retry. */
+const STATIC_MAX_RETRIES = 3;
+
 interface HgConfig {
   enabled: boolean;
   token: string;
@@ -32,7 +38,9 @@ interface HgConfig {
  * Thin typed transport for the HyperGuest API (HYPERGUEST_PLAN.md slab A).
  * Native fetch (repo rule: no axios), bearer auth + gzip on every call,
  * AbortController timeouts, HG error-envelope → HyperGuestApiError, and
- * exponential back-off on 429 for the static host.
+ * exponential back-off with jitter on transient failures (network, timeout, 429,
+ * 5xx) for the static host. Retry lives here rather than in the sync loop so the
+ * feed and per-hotel calls share one mechanism.
  *
  * CERTIFICATION RAILS (hard-coded, not config-switchable):
  *  - every outbound propertyId is asserted against certPropertyId while
@@ -84,11 +92,35 @@ export class HyperGuestClientService {
     };
   }
 
+  /**
+   * Exponential back-off with jitter: ~500ms → 1s → 2s. The jitter matters because
+   * the sync now fires batches of requests in lockstep — without it a throttled
+   * batch would retry in lockstep too and get throttled again.
+   */
+  private async backOff(
+    url: string,
+    attempt: number,
+    reason: string,
+    retryAfterMs?: number,
+  ): Promise<void> {
+    const base = retryAfterMs ?? RETRY_BASE_MS * 2 ** attempt;
+    const delayMs = retryAfterMs ?? Math.round(base * (0.75 + Math.random() * 0.5));
+    this.logger.warn(
+      `${reason} from ${url} — retrying in ${delayMs}ms (attempt ${attempt + 1})`,
+    );
+    await new Promise((r) => setTimeout(r, delayMs));
+  }
+
   private async request<T>(
     url: string,
     init: { method: 'GET' | 'POST'; body?: unknown },
-    /** Retries with back-off on 429 (static host politeness). */
-    retryOn429 = 0,
+    /**
+     * Max RETRIES (so `3` = up to 4 attempts), with back-off on the transient
+     * classes only: network failure, AbortSignal timeout, 429 and 5xx. A 4xx is a
+     * verdict, not a blip — never retried. Booking calls pass 0: they are not
+     * idempotent and must fail fast.
+     */
+    maxRetries = 0,
   ): Promise<T> {
     this.assertEnabled();
 
@@ -105,19 +137,27 @@ export class HyperGuestClientService {
         });
       } catch (err) {
         clearTimeout(timer);
+        // Network error or the timeout aborting us. Under serial full-feed load the
+        // static host throttles and these arrive in runs, so a bare failure here
+        // used to drop the hotel for the whole sync.
+        if (attempt < maxRetries) {
+          await this.backOff(url, attempt, `${(err as Error).message}`);
+          continue;
+        }
         throw new Error(
           `HyperGuest request failed (${init.method} ${url}): ${(err as Error).message}`,
         );
       }
       clearTimeout(timer);
 
-      if (res.status === 429 && attempt < retryOn429) {
+      if ((res.status === 429 || res.status >= 500) && attempt < maxRetries) {
         const retryAfter = parseInt(res.headers.get('retry-after') || '', 10);
-        const delayMs = Number.isFinite(retryAfter)
-          ? retryAfter * 1000
-          : 1000 * 2 ** attempt;
-        this.logger.warn(`429 from ${url} — backing off ${delayMs}ms (attempt ${attempt + 1})`);
-        await new Promise((r) => setTimeout(r, delayMs));
+        await this.backOff(
+          url,
+          attempt,
+          `HTTP ${res.status}`,
+          Number.isFinite(retryAfter) ? retryAfter * 1000 : undefined,
+        );
         continue;
       }
 
@@ -157,15 +197,20 @@ export class HyperGuestClientService {
     return this.request<HgStaticHotel[]>(
       `${this.cfg.staticUrl}hotels.json`,
       { method: 'GET' },
-      3,
+      STATIC_MAX_RETRIES,
     );
   }
 
+  /**
+   * Called once per new/changed hotel by the sync — ~53k times on a full run, which
+   * is where supplier throttling shows up as timeouts. Retried; an exhausted retry
+   * chain skips that one hotel rather than failing the run.
+   */
   getPropertyStatic(hotelId: number): Promise<HgPropertyStatic> {
     return this.request<HgPropertyStatic>(
       `${this.cfg.staticUrl}${hotelId}/property-static.json`,
       { method: 'GET' },
-      3,
+      STATIC_MAX_RETRIES,
     );
   }
 
