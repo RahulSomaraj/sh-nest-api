@@ -24,6 +24,7 @@ import { DashboardModule } from './modules/dashboard/dashboard.module';
 import { PaymentsModule } from './modules/payments/payments.module';
 import { ApiUsageModule } from './common/api-usage/api-usage.module';
 import { HealthModule } from './modules/health/health.module';
+import { HyperGuestAdminModule } from './modules/hyperguest-admin/hyperguest-admin.module';
 
 // --- Customer surface (/api) — MIGRATION.md phase 2 ---
 import { CustomerUsersModule } from './modules/api/users/customer-users.module';
@@ -53,6 +54,8 @@ const adminModules = [
   DashboardModule,
   PaymentsModule,
   ApiUsageModule,
+  // Phase 4 — HyperGuest sync trigger + run history (HYPERGUEST_PLAN.md slab B).
+  HyperGuestAdminModule,
 ];
 
 /**

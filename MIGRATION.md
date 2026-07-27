@@ -1,10 +1,75 @@
 # Migration tracker — Express (`sh-api/stayhopper`) → NestJS (`sh-api-nest`)
 
-Porting the `admin/v2` surface one module at a time. Source of truth per module:
-`sh-api/stayhopper/admin/controllers/v2/<module>.js` + the Mongoose model(s) in
-`sh-api/stayhopper/db/models/*.js`. Contract cross-reference: `sh-api/ENDPOINTS.md`.
+Rewrite of the legacy Express backend. Source of truth per module:
+`sh-api/stayhopper/{admin/controllers/v2,controllers/api}/<module>.js` + the Mongoose
+model(s) in `sh-api/stayhopper/db/models/*.js`. Contract cross-reference: `sh-api/ENDPOINTS.md`.
+Last audited against source & code: **2026-07-26**.
 
-## Status
+---
+
+## Status at a glance
+
+| Phase | Scope | State |
+|-------|-------|-------|
+| **1** — `admin/v2` (sh-account) | 31 modules | ✅ **Done** |
+| **2** — customer `api/*` (sh-website) | 52 endpoints + routing + auth | 🟡 **Code done, 0 verified.** 2a (3 rows) blocked |
+| **3** — background jobs | 10 jobs | 🟡 **7 built** (C1–C4, C6, C7, C9); C5/C8 need a decision; C10 skip |
+| **4** — HyperGuest | greenfield | ⬜ **Not started** (correctly — gated on phase 2 `verified`) |
+| **5** — cutover & retirement | nginx flips, archive legacy | ⬜ **Not started** (gated on everything above) |
+| **—** — surfaces outside the tracker | 4 routers | ⚠️ **3 need a decision** (`/print` is live) |
+
+### The distinction that matters: `done` ≠ `verified`
+
+The ladder is `pending → in-progress → done → verified`. **Every Phase-2/3 row is at `done`
+— nothing is `verified`.** `verified` has a specific meaning here: a contract test written
+against **legacy first**, then replayed against nest, byte-identical. That suite
+(`test/contract/`) **does not exist yet**. So the code is written and wired, but not proven
+equivalent — and no nginx flip (phase 5) can happen until it is.
+
+---
+
+## ⏳ What is pending (the whole list)
+
+Ordered by what unblocks the most. Items 1–4 are the real remaining work.
+
+1. **Contract test suite → `test/contract/`.** *Biggest item; unblocks everything.* Write
+   supertest specs against the running legacy app (the oracle), capture exact status/body/
+   headers, replay against nest. Flips 52 Phase-2 rows + the jobs from `done` → `verified`.
+   Money paths (B2, B4, B5, capture/return) also need a recorded payment-container replay.
+2. **Five product/engineering decisions:**
+   - **C5** — release-stale-unpaid-slots cron is dead code in legacy (`return;` first line).
+     Port it, or confirm it stays off?
+   - **C6** — the one behavioural change in the whole migration. Legacy pushed "extend your
+     stay?" to *every* guest (missing `await`); the port only offers when nothing conflicts.
+     Confirm that's the intended behaviour.
+   - **C8** — bulk BLOCK worker is commented in legacy. Does the extranet write
+     `cron_blockslots` BLOCK rows that now have no processor?
+   - **Invoice recipients** — legacy mailed invoices to a hardcoded personal gmail (real
+     recipient commented out), i.e. properties aren't getting invoices today. Port sends to
+     the configured mailbox + property contact. Confirm that's wanted.
+   - **Monthly / standard-day search** — legacy's round-up divisor is `0` for a standard-day
+     stay → `NaN` → room filtered out, so that search is effectively dead. Kept for parity.
+     Is fixing it in scope? (It's a pricing change, not a refactor.)
+3. **Three surface decisions** (see "Legacy surfaces OUTSIDE this tracker"):
+   - **`/print/booking/:id`** — ⚠ **live and linked from confirmation emails nest already
+     sends.** Port it or pin `/print` to legacy in nginx before archiving anything.
+   - **ResortPass** (17 routes, own models) — port or confirm retired.
+   - **v1 EJS admin panel** (~179 routes) — presumed dead; confirm nobody logs in.
+4. **A1–A3 frontend tracing** — the 3 blocked admin/v2 gaps. Trace whether sh-account /
+   sh-website still call them and what envelope they expect, before building (they're
+   commented/absent in legacy, so this is new dev, not a port).
+5. **Phase 5 cutover** — nginx `location` flips, one group at a time, a week of bake each.
+   Gated on the contract suite. First action when phase 3 ships: disable legacy crons.
+6. **Phase 4 HyperGuest** — greenfield; slots in after P2/B2 are `verified`.
+
+Also outstanding (non-blocking): local `npm install` for the new deps (`@nestjs/schedule`,
+`@nestjs/testing`, `luxon`); prune the other two Claude Code worktrees.
+
+---
+
+# Phase 1 — `admin/v2` (sh-account) ✅ Done
+
+31 modules. Complete before the Phase-2 work started.
 
 | # | Module | Legacy controller (v2) | Status |
 |---|--------|------------------------|--------|
@@ -198,7 +263,7 @@ Porting the `admin/v2` surface one module at a time. Source of truth per module:
 
 ---
 
-# Phase 2 — Customer `api/*` surface (sh-website)
+# Phase 2 — Customer `api/*` surface (sh-website) 🟡 Code done, 0 verified
 
 Source of truth: `sh-api/stayhopper/routes/api.js` (mounted at `/api`, `index.js:73`)
 plus `controllers/api/*`, `controllers/api/v2/*`, `controllers/api/v3/*`.
@@ -208,7 +273,11 @@ Inventory audited from source 2026-07-26.
 live frontend needs zero changes. Routes nothing consumes are marked `SKIP` and die
 with the legacy app.
 
-## Routing change (do first) — ✅ DONE
+**Status roll-up**: routing + auth + all 52 rows (2b–2f) are `done` and compile clean
+(`tsc` + `app.wiring.spec` 7/7). **None are `verified`** — no contract suite yet. Only
+2a (A1–A3) is unbuilt, and deliberately so (blocked on FE tracing).
+
+## Routing change — ✅ DONE
 
 1. ✅ `setGlobalPrefix` removed from `main.ts`; `RouterModule.register` in `AppModule`
    mounts `{ path: 'admin/v2', children: adminModules }` and
@@ -438,10 +507,10 @@ Post-cutover hardening backlog (breaks parity, needs FE coordination): auth on
 
 ---
 
-# Phase 3 — Background jobs (`@nestjs/schedule`)
+# Phase 3 — Background jobs (`@nestjs/schedule`) 🟡 7 built, 2 to decide, 1 skip
 
-`@nestjs/schedule` added; `modules/jobs/` holds `JobsModule`, `JobsService` (one method
-per job, each `@Cron`-decorated) and `PushService`. **Run jobs in ONE instance only** —
+`@nestjs/schedule` added; `modules/jobs/` holds `JobsModule`, `JobsService` (6 `@Cron`
+methods: C1–C4, C6, C7), `InvoicesJobService` (C9 manual trigger) and `PushService`. **Run jobs in ONE instance only** —
 every job early-returns unless `ENABLE_CRON=true`, so exactly one PM2 process should set
 it (legacy runs them as an import side effect of the web process).
 
@@ -518,13 +587,23 @@ boot. Requires no database.
 
 ---
 
-# Phase 4 — HyperGuest (greenfield inside `api/*`)
+# Phase 4 — HyperGuest (greenfield inside `api/*`) ⬜ Not started
 
 Not a migration — new `modules/api/hyperguest` per `hyperguest.types.ts` contracts.
-Depends on phase 2d (search surface) + 2e (booking flow). Certification scope:
-property 19912, DEV token, `paymentDetails.details.charge:false`, no LIVE bookings.
-Slot in after P2/B2 are `verified`. Details tracked separately (see delivered types
-+ contracts doc).
+Plan + slab tracking: `HYPERGUEST_PLAN.md`. Certification scope: property 19912,
+DEV token, `paymentDetails.details.charge:false` (hard-coded), no LIVE bookings.
+
+| Slab | Scope | State |
+|------|-------|-------|
+| A | config + types + fetch client (cert rails) | done |
+| B | hotels.json diff sync → materialized `properties` (source:'HyperGuest'), 6h cron, `POST /admin/v2/hyperguest/sync` | done |
+| C | search + detail merge (behind HG_ENABLED) | pending — after P2/2d `verified` |
+| D | booking branch + reconciliation cron | pending — after P2/2e `verified` |
+| E | full verify + certification runbook | pending |
+
+Everything is inert with `HG_ENABLED` unset (default): no routes change behaviour,
+no outbound calls, no cron work. New collections: `hg_hotels`, `hg_sync_runs`
+(additive; indexes {hotel_id unique}, {active}, {startedAt}).
 
 ---
 
@@ -568,7 +647,7 @@ still logs into it before archiving; if anything is still used, it needs its own
 
 ---
 
-# Phase 5 — Cutover & legacy retirement (proxy-level strangler)
+# Phase 5 — Cutover & legacy retirement (proxy-level strangler) ⬜ Not started
 
 Nginx (or the Azure LB) is the strangler seam — sh-website keeps one base URL:
 

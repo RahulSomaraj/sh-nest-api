@@ -32,11 +32,13 @@ export class AuthController {
   }
 
   // audit (auth hardening): tight per-endpoint throttle to blunt credential brute force.
+  // _body is unused at runtime (LocalAuthGuard consumes username/password) but binding
+  // the DTO documents the request body in Swagger and validates the payload shape.
   @Throttle({ default: { limit: 5, ttl: 60_000 } })
   @UseGuards(LocalAuthGuard)
   @HttpCode(200)
   @Post('login')
-  login(@Req() req: any) {
+  login(@Req() req: any, @Body() _body: LoginDto) {
     return this.authService.buildLoginResponse(req.user);
   }
 

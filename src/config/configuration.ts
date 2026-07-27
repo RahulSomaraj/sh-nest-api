@@ -168,6 +168,39 @@ export default () => {
    * mutate slot/booking state and send pushes; double-running double-fires them.
    */
   enableCron: process.env.ENABLE_CRON === 'true',
+
+  /**
+   * HyperGuest B2B supplier integration (phase 4, HYPERGUEST_PLAN.md).
+   * Disabled by default — with HG_ENABLED unset, no HyperGuest code runs at all
+   * (no outbound calls, no sync cron, no search merge) and every customer
+   * envelope is byte-identical to pre-integration behaviour.
+   *
+   * CERTIFICATION MODE (default true): every outbound call is asserted against
+   * `certPropertyId` (19912) and booking creation always sends charge:false —
+   * the charge:false part is hard-coded in the client regardless of config.
+   * Set HG_CERTIFICATION=false only after HyperGuest certifies the integration
+   * and a LIVE token is issued.
+   */
+  hyperguest: {
+    enabled: process.env.HG_ENABLED === 'true',
+    token: process.env.HG_TOKEN || '',
+    searchUrl: process.env.HG_SEARCH_URL || 'https://search-api.hyperguest.io/2.0/',
+    bookUrl: process.env.HG_BOOK_URL || 'https://book-api.hyperguest.com/2.0/',
+    staticUrl: process.env.HG_STATIC_URL || 'https://hg-static.hyperguest.com/',
+    certification: process.env.HG_CERTIFICATION !== 'false',
+    certPropertyId: parseInt(process.env.HG_CERT_PROPERTY_ID, 10) || 19912,
+    // `reference.agency` sent on booking create; also the reconciliation list filter.
+    agencyReference: process.env.HG_AGENCY_REFERENCE || 'stayhopper',
+    timeoutMs: parseInt(process.env.HG_TIMEOUT_MS, 10) || 15_000,
+    /**
+     * Owner ObjectId stamped on materialized HyperGuest properties
+     * (property.administrator is a required ref). Deliberately a dangling,
+     * reserved id — HG properties belong to no extranet admin, owner-scoped
+     * admin queries never match them, and populate() yields null (tolerated
+     * everywhere `company: null` already is).
+     */
+    systemAdminId: process.env.HG_SYSTEM_ADMIN_ID || 'ffffffffffff000000004847',
+  },
   };
 };
 

@@ -109,6 +109,11 @@ describe('application wiring', () => {
     expect(routes).toContain('POST /admin/v2/invoices/generate');
   });
 
+  it('exposes the HyperGuest sync trigger + run history (phase 4)', () => {
+    expect(routes).toContain('POST /admin/v2/hyperguest/sync');
+    expect(routes).toContain('GET /admin/v2/hyperguest/sync-runs');
+  });
+
   it('declares specific routes before their parameterised siblings', () => {
     // `/api/properties/search` must win over `/api/properties/:id`, and
     // `/admin/v2/invoices/generate` over `/admin/v2/invoices/:id`.

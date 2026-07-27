@@ -27,8 +27,12 @@
     "test:crud": "jest --verbose cities.crud.spec",
     "test:commissions": "jest --verbose commissions.controller.spec",
     "test:common": "jest --verbose owner-scope.spec",
+    "test:hyperguest": "jest --verbose hyperguest",
     "seed:properties": "ts-node -r tsconfig-paths/register scripts/seed-properties.ts",
     "seed:properties:clean": "ts-node -r tsconfig-paths/register scripts/seed-properties.ts --clean",
+    "seed:all": "ts-node -r tsconfig-paths/register scripts/seed-all.ts",
+    "seed:all:clean": "ts-node -r tsconfig-paths/register scripts/seed-all.ts --clean",
+    "seed:all:check-images": "ts-node -r tsconfig-paths/register scripts/seed-all.ts --check-images",
     "indexes:sync": "ts-node -r tsconfig-paths/register scripts/sync-indexes.ts"
   },
   "jest": {

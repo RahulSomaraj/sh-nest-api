@@ -6,6 +6,8 @@ import { ReferenceModelsModule } from '../../common/reference/reference.module';
 import { JobsService } from './jobs.service';
 import { InvoicesJobService } from './invoices-job.service';
 import { PushService } from './push.service';
+import { HyperGuestSyncJob } from './hyperguest-sync.job';
+import { HyperGuestModule } from '../api/hyperguest/hyperguest.module';
 import { InvoiceSchema } from '../invoices/schemas/invoice.schema';
 import { CronBlockSlotSchema } from './schemas/cron-block-slot.schema';
 import { NotificationLogSchema } from './schemas/notification-log.schema';
@@ -28,6 +30,8 @@ import {
     ScheduleModule.forRoot(),
     ReferenceModelsModule,
     MailModule,
+    // HyperGuest static sync (phase 4) — no-op unless ENABLE_CRON + HG_ENABLED.
+    HyperGuestModule,
     MongooseModule.forFeature([
       { name: 'cron_blockslots', schema: CronBlockSlotSchema },
       { name: 'notificationlogs', schema: NotificationLogSchema },
@@ -37,7 +41,7 @@ import {
       { name: 'invoices', schema: InvoiceSchema },
     ]),
   ],
-  providers: [JobsService, InvoicesJobService, PushService],
+  providers: [JobsService, InvoicesJobService, PushService, HyperGuestSyncJob],
   // InvoicesJobService is consumed by the admin `POST /admin/v2/invoices/generate` route.
   exports: [JobsService, InvoicesJobService, PushService],
 })
