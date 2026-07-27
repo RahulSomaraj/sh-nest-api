@@ -33,7 +33,9 @@
     "seed:all": "ts-node -r tsconfig-paths/register scripts/seed-all.ts",
     "seed:all:clean": "ts-node -r tsconfig-paths/register scripts/seed-all.ts --clean",
     "seed:all:check-images": "ts-node -r tsconfig-paths/register scripts/seed-all.ts --check-images",
-    "indexes:sync": "ts-node -r tsconfig-paths/register scripts/sync-indexes.ts"
+    "indexes:sync": "ts-node -r tsconfig-paths/register scripts/sync-indexes.ts",
+    "hg:status": "ts-node -r tsconfig-paths/register scripts/hg-status.ts",
+    "hg:sync": "ts-node -r tsconfig-paths/register scripts/hg-sync.ts"
   },
   "jest": {
     "moduleFileExtensions": [

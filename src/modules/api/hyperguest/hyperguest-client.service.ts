@@ -35,7 +35,7 @@ interface HgConfig {
 }
 
 /**
- * Thin typed transport for the HyperGuest API (HYPERGUEST_PLAN.md slab A).
+ * Thin typed transport for the HyperGuest API (MIGRATION.md phase 4, slab A).
  * Native fetch (repo rule: no axios), bearer auth + gzip on every call,
  * AbortController timeouts, HG error-envelope → HyperGuestApiError, and
  * exponential back-off with jitter on transient failures (network, timeout, 429,
@@ -253,7 +253,7 @@ export class HyperGuestClientService {
     // charge is forced to literal false; a caller asking for true is a bug.
     if (body.paymentDetails?.details?.charge === true) {
       throw new Error(
-        'HyperGuest: paymentDetails.details.charge:true is forbidden (no charging agreement — see HYPERGUEST_PLAN.md)',
+        'HyperGuest: paymentDetails.details.charge:true is forbidden (no charging agreement — see MIGRATION.md phase 4)',
       );
     }
     const safeBody: HgCreateBookingRequest = {

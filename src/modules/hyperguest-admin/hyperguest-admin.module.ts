@@ -7,7 +7,7 @@ import { HyperGuestSyncService } from '../api/hyperguest/hyperguest-sync.service
 
 /**
  * Admin surface for the HyperGuest integration (mounted under admin/v2 via
- * AppModule's adminModules — HYPERGUEST_PLAN.md slab B).
+ * AppModule's adminModules — MIGRATION.md phase 4, slab B).
  *
  * POST /admin/v2/hyperguest/sync — force a static sync without waiting for the
  * 6-hourly cron (same pattern as POST /admin/v2/invoices/generate). Returns the
@@ -31,6 +31,18 @@ export class HyperGuestAdminController {
   @Get('sync-runs')
   runs(@Query('limit') limit?: string) {
     return this.sync.recentRuns(Math.min(parseInt(limit, 10) || 10, 50));
+  }
+
+  /**
+   * Scope discovery — city + city_Id + hotel count straight off the feed index,
+   * so HG_CITIES / HG_CITY_IDS can be set from real values. One upstream request
+   * (hotels.json), no property-static fetches. `?match=dub` filters the list.
+   */
+  @UseGuards(PermissionsGuard)
+  @RequirePermissions('LIST_ALL_PROPERTIES')
+  @Get('feed-cities')
+  feedCities(@Query('match') match?: string) {
+    return this.sync.feedCities(match);
   }
 }
 

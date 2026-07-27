@@ -170,7 +170,7 @@ export default () => {
   enableCron: process.env.ENABLE_CRON === 'true',
 
   /**
-   * HyperGuest B2B supplier integration (phase 4, HYPERGUEST_PLAN.md).
+   * HyperGuest B2B supplier integration (MIGRATION.md phase 4).
    * Disabled by default — with HG_ENABLED unset, no HyperGuest code runs at all
    * (no outbound calls, no sync cron, no search merge) and every customer
    * envelope is byte-identical to pre-integration behaviour.
@@ -192,6 +192,52 @@ export default () => {
     // `reference.agency` sent on booking create; also the reconciliation list filter.
     agencyReference: process.env.HG_AGENCY_REFERENCE || 'stayhopper',
     timeoutMs: parseInt(process.env.HG_TIMEOUT_MS, 10) || 15_000,
+
+    /**
+     * SCOPE FILTER — the single biggest lever on sync cost. HG's feed is ~53k
+     * hotels worldwide and each one costs its own property-static round-trip, so
+     * an unfiltered first import is hours of throttled traffic. Restricting to the
+     * cities we actually sell turns that into minutes.
+     *
+     * HG_COUNTRIES  comma-separated ISO-3166 alpha-2 codes matched against the
+     *               feed's `country` field (e.g. "AE"). The right lever for "every
+     *               hotel in this market": the UAE's 333 hotels span 12 city_Ids,
+     *               several of which are districts rather than cities ("Jumeirah",
+     *               "Bur Duba", "Aljada, Sharjah"), so a city list silently misses
+     *               them while a country code cannot.
+     * HG_CITIES     comma-separated city names, matched case-insensitively against
+     *               the feed's `city` field (e.g. "Dubai" or "Dubai,Abu Dhabi").
+     * HG_CITY_IDS   comma-separated numeric `city_Id`s — exact, and immune to
+     *               spelling/casing drift in the feed. Preferred once known.
+     * Any may be set; a hotel matching ANY list is in scope. All empty = whole
+     * feed (previous behaviour). Note the OR: leaving HG_CITIES=Dubai set while
+     * adding HG_COUNTRIES=AE widens scope, it does not narrow it to Dubai.
+     *
+     * NOTE: narrowing the scope unpublishes previously-synced hotels that fall
+     * outside it — that is the intended "this is what we sell now" semantics.
+     */
+    countries: (process.env.HG_COUNTRIES || '')
+      .split(',')
+      .map((c) => c.trim().toUpperCase())
+      .filter(Boolean),
+    cities: (process.env.HG_CITIES || '')
+      .split(',')
+      .map((c) => c.trim().toLowerCase())
+      .filter(Boolean),
+    cityIds: (process.env.HG_CITY_IDS || '')
+      .split(',')
+      .map((c) => parseInt(c.trim(), 10))
+      .filter((n) => Number.isFinite(n)),
+
+    /**
+     * Static-feed pacing. The supplier throttles hard (HTTP 429) and retrying
+     * harder does not help — staying under the limit does. `staticConcurrency`
+     * caps in-flight property-static requests; `staticRps` spaces their starts.
+     * Effective rate is the lower of the two. If a paced run still logs 429s,
+     * halve HG_STATIC_RPS.
+     */
+    staticConcurrency: parseInt(process.env.HG_STATIC_CONCURRENCY, 10) || 4,
+    staticRps: parseFloat(process.env.HG_STATIC_RPS) || 3,
     /**
      * Owner ObjectId stamped on materialized HyperGuest properties
      * (property.administrator is a required ref). Deliberately a dangling,

@@ -7,13 +7,8 @@ import { HgPropertyStatic, HgStaticHotel, HgSyncSummary } from './hyperguest.typ
 
 const KEEP_SYNC_RUNS = 50;
 
-/**
- * Hotels materialized concurrently per batch (sequential between batches). Each one
- * is its own property-static round-trip, so the serial loop this replaces ran the
- * full feed at ~3.5 hotels/sec ≈ 4h. Deliberately NOT an unbounded Promise.all over
- * 53k — that would open 53k sockets and guarantee supplier throttling. Tune here.
- */
-const MATERIALIZE_CONCURRENCY = 20;
+/** Checkpoint the run doc every N completed hotels (progress + crash diagnosis). */
+const CHECKPOINT_EVERY = 50;
 
 /**
  * Per-hotel failures kept in the run doc. The whole summary is one document, and an
@@ -33,6 +28,13 @@ interface HgSyncConfig {
   certification: boolean;
   certPropertyId: number;
   systemAdminId: string;
+  /** Scope filter — see configuration.ts. Empty/absent = whole feed. */
+  countries?: string[];
+  cities?: string[];
+  cityIds?: number[];
+  /** Static-feed pacing. */
+  staticConcurrency?: number;
+  staticRps?: number;
 }
 
 /** The projection of `hg_hotels` the diff needs. */
@@ -44,7 +46,7 @@ interface HgKnownRow {
 }
 
 /**
- * HyperGuest static sync (HYPERGUEST_PLAN.md slab B, decision D1).
+ * HyperGuest static sync (MIGRATION.md phase 4, slab B, decision D1).
  *
  * Discovery is a diff: HG offers no webhook, so each run pulls hotels.json and
  * compares against `hg_hotels` by hotel_id —
@@ -66,10 +68,12 @@ interface HgKnownRow {
  * Full-feed hardening (the defects below only bite with HG_CERTIFICATION=false):
  *  - the feed repeats hotel_id, so it is deduped to one entry per id before the
  *    loop — otherwise each repeat created a second property and orphaned the first;
- *  - hotels are materialized in batches of MATERIALIZE_CONCURRENCY rather than
- *    strictly serially, per-hotel error isolation unchanged;
- *  - the run doc is written up front as `running` and checkpointed per batch, so an
- *    interrupted run is still diagnosable, and it doubles as a cross-instance lock.
+ *  - hotels are materialized by a worker pool bounded by BOTH staticConcurrency and
+ *    staticRps (the supplier throttles hard; concurrency alone still bursts), with
+ *    per-hotel error isolation — one bad hotel never aborts the run;
+ *  - the run doc is written up front as `running` and checkpointed every
+ *    CHECKPOINT_EVERY hotels, so an interrupted run is still diagnosable, and it
+ *    doubles as a cross-instance lock.
  */
 @Injectable()
 export class HyperGuestSyncService {
@@ -101,6 +105,12 @@ export class HyperGuestSyncService {
       durationMs: 0,
       feedTotal: 0,
       skippedByCertification: 0,
+      skippedByCity: 0,
+      scope: {
+        countries: hg.countries ?? [],
+        cities: hg.cities ?? [],
+        cityIds: hg.cityIds ?? [],
+      },
       duplicatesCollapsed: 0,
       created: 0,
       updated: 0,
@@ -123,10 +133,23 @@ export class HyperGuestSyncService {
       summary.feedTotal = feed.length;
 
       // Certification: the diff sees the whole feed but only 19912 materializes.
-      const filtered = hg.certification
+      const certFiltered = hg.certification
         ? feed.filter((h) => h.hotel_id === hg.certPropertyId)
         : feed;
-      summary.skippedByCertification = feed.length - filtered.length;
+      summary.skippedByCertification = feed.length - certFiltered.length;
+
+      // Scope: restrict to the cities we sell. Applied AFTER certification so the
+      // two counters stay meaningful, and before any property-static fetch — the
+      // whole point is not paying a round-trip for a hotel we will never list.
+      const filtered = certFiltered.filter((h) => inScope(h, hg));
+      summary.skippedByCity = certFiltered.length - filtered.length;
+      if (summary.skippedByCity > 0) {
+        this.logger.log(
+          `HG scope filter [countries: ${(hg.countries ?? []).join(', ') || '—'}; ` +
+            `cities: ${(hg.cities ?? []).join(', ') || '—'}; city_Ids: ${(hg.cityIds ?? []).join(', ') || '—'}] ` +
+            `kept ${filtered.length} of ${certFiltered.length} hotels`,
+        );
+      }
 
       // HG's feed repeats hotel_id; keep the last entry per id so one id → one
       // property. Without this every repeat re-entered the create branch (the
@@ -163,28 +186,39 @@ export class HyperGuestSyncService {
         }
       }
 
-      for (let i = 0; i < pending.length; i += MATERIALIZE_CONCURRENCY) {
-        const batch = pending.slice(i, i + MATERIALIZE_CONCURRENCY);
-        // Per-hotel isolation is unchanged: each task swallows its own failure, so
-        // one bad hotel can never reject the batch or abort the run.
-        await Promise.all(
-          batch.map(async ({ hotel, existing }) => {
-            try {
-              await this.materialize(hotel, existing);
-              if (existing) summary.updated++;
-              else summary.created++;
-            } catch (err) {
-              this.recordError(summary, hotel.hotel_id, (err as Error).message);
-            }
-          }),
+      const concurrency = Math.max(1, hg.staticConcurrency ?? 4);
+      const rps = Math.max(0.1, hg.staticRps ?? 3);
+      if (pending.length) {
+        this.logger.log(
+          `HG sync materializing ${pending.length} hotel(s) at ≤${rps}/s across ${concurrency} worker(s) ` +
+            `— est. ${Math.ceil(pending.length / rps / 60)} min`,
         );
-        // Checkpoint so a run killed mid-flight is still diagnosable.
-        await this.persistProgress(runId, summary);
       }
 
-      // Removed: known + active but no longer in the (certification-filtered) feed.
-      // In certification mode only the cert property is ever materialized, so this
-      // correctly ignores the rest of the feed.
+      let done = 0;
+      await this.runPaced(pending, concurrency, rps, async ({ hotel, existing }) => {
+        // Per-hotel isolation: each task swallows its own failure, so one bad hotel
+        // can never reject a sibling or abort the run.
+        try {
+          await this.materialize(hotel, existing);
+          if (existing) summary.updated++;
+          else summary.created++;
+        } catch (err) {
+          this.recordError(summary, hotel.hotel_id, (err as Error).message);
+        }
+        // Checkpoint so a run killed mid-flight is still diagnosable, and so a long
+        // first import reports progress instead of looking hung.
+        if (++done % CHECKPOINT_EVERY === 0) {
+          this.logger.log(`HG sync progress: ${done}/${pending.length} hotels`);
+          await this.persistProgress(runId, summary);
+        }
+      });
+      await this.persistProgress(runId, summary);
+
+      // Deactivate anything active that is no longer in scope: dropped out of the
+      // feed, excluded by certification, or outside the city filter. `feedIds` is
+      // the post-filter set, so narrowing HG_CITIES unpublishes the hotels that
+      // narrowing excluded — intended: scope is "what we sell now".
       for (const k of known) {
         if (k.active && !feedIds.has(k.hotel_id)) {
           await this.hgHotelModel
@@ -226,7 +260,8 @@ export class HyperGuestSyncService {
     this.logger.log(
       `HG sync (${trigger}): feed=${summary.feedTotal} new=${summary.created} updated=${summary.updated} ` +
         `unpublished=${summary.unpublished} unchanged=${summary.unchanged} certSkipped=${summary.skippedByCertification} ` +
-        `duplicates=${summary.duplicatesCollapsed} errors=${summary.errorCount} in ${summary.durationMs}ms`,
+        `citySkipped=${summary.skippedByCity} duplicates=${summary.duplicatesCollapsed} ` +
+        `errors=${summary.errorCount} in ${summary.durationMs}ms`,
     );
 
     // Terminal update on the row created up front — this also releases the lock,
@@ -241,7 +276,85 @@ export class HyperGuestSyncService {
     return this.hgSyncRunModel.find({}).sort({ startedAt: -1 }).limit(limit).lean().exec();
   }
 
+  /**
+   * Scope discovery: aggregate the feed index by city so HG_CITIES / HG_CITY_IDS
+   * can be set from real values instead of guesses (the feed's spelling and
+   * city_Id are the only things that matter to `inScope`). Costs ONE request —
+   * hotels.json only, no property-static — so it is safe to call before committing
+   * to a multi-thousand-hotel import.
+   *
+   * `match` filters the returned list case-insensitively, e.g. ?match=dub.
+   */
+  async feedCities(
+    match?: string,
+  ): Promise<
+    { cities: Array<{ city: string; city_Id: number; country: string; hotels: number }>; feedTotal: number } | { skipped: string }
+  > {
+    const hg = this.config.get<HgSyncConfig>('hyperguest');
+    if (!hg?.enabled) return { skipped: 'HG_ENABLED != true' };
+
+    const feed = await this.client.getHotels();
+    const byKey = new Map<string, { city: string; city_Id: number; country: string; hotels: number }>();
+    // Dedupe hotel_id first: the feed repeats ids, and a duplicate is not a hotel.
+    for (const h of new Map(feed.map((f) => [f.hotel_id, f])).values()) {
+      const key = `${h.city_Id}|${h.city}`;
+      const row = byKey.get(key);
+      if (row) row.hotels++;
+      else byKey.set(key, { city: h.city, city_Id: h.city_Id, country: h.country, hotels: 1 });
+    }
+
+    const needle = match?.trim().toLowerCase();
+    const cities = [...byKey.values()]
+      .filter((c) => !needle || c.city?.toLowerCase().includes(needle))
+      .sort((a, b) => b.hotels - a.hotels);
+
+    return { cities, feedTotal: feed.length };
+  }
+
   // -------------------------------------------------------------------------
+
+  /**
+   * Run `worker` over `items` with BOTH a concurrency cap and a request-rate cap.
+   *
+   * Two limits, because they solve different problems: concurrency bounds how many
+   * sockets are open at once, while the rate gate bounds how fast starts are issued.
+   * Concurrency alone still bursts — N workers all fire the instant the previous
+   * batch returns, which is exactly what tripped the supplier's 429s.
+   *
+   * Workers pull from a shared cursor rather than running fixed slices, so one slow
+   * hotel never idles the pool (the batched version waited for its slowest member).
+   */
+  private async runPaced<T>(
+    items: T[],
+    concurrency: number,
+    rps: number,
+    worker: (item: T) => Promise<void>,
+  ): Promise<void> {
+    if (!items.length) return;
+    const minIntervalMs = 1000 / rps;
+    let cursor = 0;
+    let nextSlot = Date.now();
+
+    /** Reserve the next start slot; serialised because JS is single-threaded here. */
+    const takeSlot = async (): Promise<void> => {
+      const now = Date.now();
+      const slot = Math.max(now, nextSlot);
+      nextSlot = slot + minIntervalMs;
+      const wait = slot - now;
+      if (wait > 0) await new Promise((r) => setTimeout(r, wait));
+    };
+
+    const runWorker = async (): Promise<void> => {
+      for (;;) {
+        const index = cursor++;
+        if (index >= items.length) return;
+        await takeSlot();
+        await worker(items[index]);
+      }
+    };
+
+    await Promise.all(Array.from({ length: Math.min(concurrency, items.length) }, runWorker));
+  }
 
   /** Fetch static + upsert hg_hotels row + upsert the materialized property. */
   private async materialize(hotel: HgStaticHotel, existing: HgKnownRow | null): Promise<void> {
@@ -300,15 +413,16 @@ export class HyperGuestSyncService {
   ): Promise<Record<string, unknown>> {
     const name = str(staticData.name) || hotel.name;
     const coords = extractCoordinates(staticData);
+    const images = extractImages(staticData);
     return {
       name,
       legal_name: name,
-      description: str(staticData.description) || '',
+      description: extractDescription(staticData),
       source: 'HyperGuest',
       published: true,
       currency: await this.aedCurrencyId(),
-      images: extractImages(staticData),
-      featured: extractImages(staticData).slice(0, 1),
+      images,
+      featured: images.slice(0, 1),
       timeslots: [24], // nightly-only supplier (decision D2)
       anyTimeCheckin: false,
       contactinfo: {
@@ -442,6 +556,36 @@ export class HyperGuestSyncService {
   }
 }
 
+/**
+ * Scope predicate. A hotel is in scope when ANY configured list matches, so
+ * HG_COUNTRIES (whole market), HG_CITY_IDS (exact) and HG_CITIES (human-readable)
+ * can be mixed while the id list is still being discovered. All lists empty = no
+ * filter.
+ *
+ * Country is checked first and is the coarsest: the UAE's hotels sit under 12
+ * distinct city_Ids including districts like "Jumeirah" and "Bur Duba", which a
+ * city-name list misses without ever reporting that it did.
+ */
+function inScope(
+  hotel: HgStaticHotel,
+  hg: { countries?: string[]; cities?: string[]; cityIds?: number[] },
+): boolean {
+  const countries = hg.countries ?? [];
+  const cities = hg.cities ?? [];
+  const cityIds = hg.cityIds ?? [];
+  if (!countries.length && !cities.length && !cityIds.length) return true;
+  if (countries.length && typeof hotel.country === 'string') {
+    if (countries.includes(hotel.country.trim().toUpperCase())) return true;
+  }
+  if (cityIds.length && Number.isFinite(hotel.city_Id) && cityIds.includes(hotel.city_Id)) {
+    return true;
+  }
+  if (cities.length && typeof hotel.city === 'string') {
+    return cities.includes(hotel.city.trim().toLowerCase());
+  }
+  return false;
+}
+
 // ---------------------------------------------------------------------------
 // Defensive extractors for the unverified property-static payload
 // ---------------------------------------------------------------------------
@@ -452,12 +596,57 @@ function str(v: unknown): string | undefined {
   return undefined;
 }
 
+/**
+ * VERIFIED against live payloads (2026-07-27, 333 UAE hotels): images are
+ * `{type, uri, priority, size, ...}` and the URL key is `uri`. The original
+ * guesses (`url` / `href`) matched nothing, so every property materialized with
+ * images: [] — silently, because an empty array is indistinguishable from a hotel
+ * that simply has no photos. url/href/string are kept as fallbacks in case other
+ * suppliers' payloads differ. Feed order is preserved rather than sorted by
+ * `priority`, whose semantics are still unconfirmed.
+ */
 function extractImages(s: HgPropertyStatic): string[] {
   const raw = (s.images ?? s.photos ?? s.media) as unknown;
   if (!Array.isArray(raw)) return [];
   return raw
-    .map((i) => (typeof i === 'string' ? i : (i as any)?.url || (i as any)?.href || ''))
+    .map((i) =>
+      typeof i === 'string'
+        ? i
+        : (i as any)?.uri || (i as any)?.url || (i as any)?.href || '',
+    )
     .filter((u): u is string => typeof u === 'string' && u.startsWith('http'));
+}
+
+/**
+ * VERIFIED against live payloads: descriptions are an ARRAY of
+ * `{language, type, description}` under the plural key `descriptions`. The
+ * original `staticData.description` (singular) matched nothing, so all 333 UAE
+ * properties landed with an empty description.
+ *
+ * Prefers the general English entry, then any English one, then the first
+ * available — a non-English description beats none. The singular key is kept as a
+ * last resort for payload variants.
+ */
+function extractDescription(s: HgPropertyStatic): string {
+  const raw = s.descriptions as unknown;
+  if (Array.isArray(raw)) {
+    // Only entries that actually carry text are candidates: the feed does ship
+    // `{language:'en_US', type:'general', description:''}`, and preferring that
+    // blank entry over a populated one would lose a description we do have.
+    const entries = raw.filter(
+      (d): d is Record<string, unknown> =>
+        !!d && typeof d === 'object' && !!str((d as Record<string, unknown>).description),
+    );
+    const isEn = (d: Record<string, unknown>) =>
+      typeof d.language === 'string' && d.language.toLowerCase().startsWith('en');
+    const pick =
+      entries.find((d) => isEn(d) && d.type === 'general') ??
+      entries.find(isEn) ??
+      entries[0];
+    const text = pick && str(pick.description);
+    if (text) return text;
+  }
+  return str(s.description) || '';
 }
 
 function extractCoordinates(s: HgPropertyStatic): { lat: number; lng: number } | null {

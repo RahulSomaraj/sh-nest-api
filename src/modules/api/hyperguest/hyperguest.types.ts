@@ -1,6 +1,6 @@
 /**
  * HyperGuest API contracts — captured 2026-07-13 from HyperGuest Hub
- * (https://hub.hyperguest.io/demand/basic). Phase 4, HYPERGUEST_PLAN.md.
+ * (https://hub.hyperguest.io/demand/basic). MIGRATION.md phase 4.
  *
  * Auth on every API call: `Authorization: Bearer <token>` +
  * `Accept-Encoding: gzip, deflate`.
@@ -90,9 +90,20 @@ export interface HgStaticHotel {
 
 /**
  * {staticUrl}{hotelId}/property-static.json — full hotel content.
- * Shape NOT yet verified against a live payload (static host needs the token;
- * capture one during certification and tighten this type). All access goes
- * through the defensive extractors in hyperguest-sync.service.ts.
+ *
+ * Top-level keys CONFIRMED against live payloads (2026-07-27, 333 UAE hotels):
+ *   id, hotelOrganizationId, hotelChainId, name, rating, group, status,
+ *   coordinates, location, contact, updated, created, isTest, version,
+ *   commission, settings, logo, contacts, descriptions, rooms, roomMap, images,
+ *   facilities, policies, ratePlans, ratePlanMap, taxesFees, tags, attributes,
+ *   taxId, allowSell, ariType, rateType, childPriceType, usePaxConversion,
+ *   usePricePerRoom, useDDO, bookingComUrl, roomsAndRatePlansMapping
+ *
+ * The two that bit us: `images` is `{type, uri, priority, size, …}[]` (the URL key
+ * is `uri`), and descriptions live under the PLURAL `descriptions` as
+ * `{language, type, description}[]` — there is no singular `description`. The
+ * index signature stays because most of the above is still unmodelled; access
+ * goes through the extractors in hyperguest-sync.service.ts.
  */
 export interface HgPropertyStatic {
   [key: string]: unknown;
@@ -322,6 +333,15 @@ export interface HgSyncSummary {
   /** Hotels excluded by certification mode (everything except 19912). */
   skippedByCertification: number;
   /**
+   * Hotels excluded by the scope filter (HG_COUNTRIES / HG_CITIES / HG_CITY_IDS).
+   * Counted separately from certification skips: one is a compliance rail, the
+   * other is "we don't sell there". Field name kept as-is now that countries are
+   * also a scope lever — renaming it would break the persisted run shape.
+   */
+  skippedByCity: number;
+  /** Scope actually applied this run — recorded so a run is interpretable later. */
+  scope?: { countries: string[]; cities: string[]; cityIds: number[] };
+  /**
    * Repeated hotel_ids collapsed out of the feed before materializing. HG's
    * hotels.json really does repeat ids; without the dedupe each repeat took the
    * create branch again and orphaned the previous property (46% of a full run).
@@ -329,6 +349,10 @@ export interface HgSyncSummary {
   duplicatesCollapsed: number;
   created: number;
   updated: number;
+  /**
+   * Hotels deactivated this run: gone from the feed OR fallen outside the current
+   * city scope. Never deleted — bookings may reference the property.
+   */
   unpublished: number;
   unchanged: number;
   /**

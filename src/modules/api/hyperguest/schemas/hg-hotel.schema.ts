@@ -2,7 +2,7 @@ import { Schema, SchemaTypes } from 'mongoose';
 
 /**
  * NEW collection `hg_hotels` — mirror of the HyperGuest static feed plus the link
- * to the materialized `properties` doc (HYPERGUEST_PLAN.md slab B, decision D1).
+ * to the materialized `properties` doc (MIGRATION.md phase 4, slab B, decision D1).
  * One row per HG hotel_id ever seen; `active:false` when the hotel drops out of
  * the feed (the linked property is unpublished, never deleted).
  *
@@ -51,6 +51,13 @@ export const HgSyncRunSchema = new Schema(
     durationMs: Number,
     feedTotal: Number,
     skippedByCertification: Number,
+    skippedByCity: Number,
+    /** The HG_COUNTRIES / HG_CITIES / HG_CITY_IDS scope in force for this run. */
+    scope: {
+      countries: [String],
+      cities: [String],
+      cityIds: [Number],
+    },
     duplicatesCollapsed: Number,
     created: Number,
     updated: Number,

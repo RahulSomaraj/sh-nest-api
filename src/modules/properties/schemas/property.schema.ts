@@ -126,7 +126,7 @@ export const PropertySchema = new Schema(
     user_rating: Number,
     legal_name: String,
     status: { type: Boolean, default: true },
-    // 'HyperGuest' = supplier-materialized property (phase 4, HYPERGUEST_PLAN.md D1).
+    // 'HyperGuest' = supplier-materialized property (MIGRATION.md phase 4, decision D1).
     // Deliberately NOT matched by the dashboard's Extranet $or bucket.
     source: { type: String, enum: ['Website', 'Extranet', 'HyperGuest'], default: 'Extranet' },
     max_day_price_percentage_to_normal_price: Number,

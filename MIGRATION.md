@@ -587,23 +587,62 @@ boot. Requires no database.
 
 ---
 
-# Phase 4 — HyperGuest (greenfield inside `api/*`) ⬜ Not started
+# Phase 4 — HyperGuest (greenfield inside `api/*`) 🟡 Content live, not sellable
 
 Not a migration — new `modules/api/hyperguest` per `hyperguest.types.ts` contracts.
-Plan + slab tracking: `HYPERGUEST_PLAN.md`. Certification scope: property 19912,
-DEV token, `paymentDetails.details.charge:false` (hard-coded), no LIVE bookings.
+Certification scope: property 19912, DEV token, `paymentDetails.details.charge:false`
+(hard-coded in the client, not config-switchable), no LIVE bookings.
 
 | Slab | Scope | State |
 |------|-------|-------|
-| A | config + types + fetch client (cert rails) | done |
-| B | hotels.json diff sync → materialized `properties` (source:'HyperGuest'), 6h cron, `POST /admin/v2/hyperguest/sync` | done |
-| C | search + detail merge (behind HG_ENABLED) | pending — after P2/2d `verified` |
-| D | booking branch + reconciliation cron | pending — after P2/2e `verified` |
+| A | config + types + fetch client (cert rails, retry/back-off) | done |
+| B | hotels.json diff sync → materialized `properties` (source:'HyperGuest'), 6h cron, `POST /admin/v2/hyperguest/sync`, `npm run hg:sync` / `hg:status` | **done — hotels imported** |
+| C | search + detail merge (behind HG_ENABLED) | **next** |
+| D | booking branch (pre-book → create) + reconciliation cron | pending — after C |
 | E | full verify + certification runbook | pending |
 
 Everything is inert with `HG_ENABLED` unset (default): no routes change behaviour,
 no outbound calls, no cron work. New collections: `hg_hotels`, `hg_sync_runs`
 (additive; indexes {hotel_id unique}, {active}, {startedAt}).
+
+**Imported hotels are deliberately not sellable yet.** Materialized properties carry
+`rooms: []`, and the search pipeline drops zero-room properties — so HG hotels have
+ids, content and routing in place but never surface to customers until slab C serves
+virtual rooms from live HG search.
+
+### Architecture decisions (settled)
+
+| # | Decision | Why |
+|---|----------|-----|
+| D1 | HG hotels are **materialized as real `properties` docs** (`source:'HyperGuest'`); rooms stay **virtual** (live from HG search, never stored) | Detail routing, favourites, bookings and populate all key off `properties` — a real doc means zero special-casing. Rooms/prices change constantly and only HG knows availability, so storing them guarantees staleness. |
+| D2 | HG participates only in **nightly-shaped stays** (full-day segments, or monthly ≤30 nights) | HG is a nights-based API; sub-day slot stays cannot be represented. |
+| D3 | **Keep the MamoPay payment-link flow.** HG booking is created *after* payment succeeds, with `charge:false` | `charge:false` is mandatory pre-certification anyway; no change to the payment container; nothing exists on HG's side to unwind if payment fails. |
+| D4 | Config is **env-only** (`HG_*` in `configuration.ts`) | Matches the repo pattern; admin-managed CRUD can come later if partners multiply. |
+| D5 | Search merge hooks **inside `SearchService.getProperties`, between rating population and `sortAndPaginateProperties`** | The only seam where HG items flow through sort/count/totalPages exactly like native ones, so the response envelope stays byte-identical. |
+
+### Scope + pacing (slab B operational notes)
+
+`HG_CITIES` / `HG_CITY_IDS` (and `HG_COUNTRIES`) filter the feed **before** any
+`property-static` fetch — the supplier exposes content one hotel per request, so
+scope is the only real cost lever. `HG_STATIC_CONCURRENCY` (default 4) and
+`HG_STATIC_RPS` (default 3) pace the import; the supplier throttles hard and
+retrying harder does not help. Narrowing scope unpublishes out-of-scope hotels
+(never deletes — bookings may reference them). `GET /admin/v2/hyperguest/feed-cities`
+lists cities + `city_Id` + counts from one feed request.
+
+### Open items (product decisions, not blockers)
+
+- **Refund path when HG create fails after the customer already paid** (consequence of
+  D3). Needs a decision before LIVE.
+- Home-page lists (`MainService.hotelsCheapest` / `hotelsPopular`) are a *second*
+  merge point, deliberately not covered by slab C.
+- LIVE cutover: LIVE token, `HG_CERTIFICATION=false`, revisit the charging model.
+
+`property-static.json`'s shape is **confirmed** against live payloads (2026-07-27,
+333 UAE hotels) — see the key list on `HgPropertyStatic`. The two that bit us:
+image URLs live under `images[].uri` (not `.url`), and descriptions under the
+plural `descriptions[]` (`{language, type, description}`), with no singular
+`description` key.
 
 ---
 

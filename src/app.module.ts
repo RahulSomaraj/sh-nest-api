@@ -54,7 +54,7 @@ const adminModules = [
   DashboardModule,
   PaymentsModule,
   ApiUsageModule,
-  // Phase 4 — HyperGuest sync trigger + run history (HYPERGUEST_PLAN.md slab B).
+  // Phase 4 — HyperGuest sync trigger + run history (MIGRATION.md phase 4, slab B).
   HyperGuestAdminModule,
 ];
 

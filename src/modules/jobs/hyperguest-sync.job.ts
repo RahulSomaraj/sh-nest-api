@@ -4,7 +4,7 @@ import { Cron } from '@nestjs/schedule';
 import { HyperGuestSyncService } from '../api/hyperguest/hyperguest-sync.service';
 
 /**
- * 6-hourly HyperGuest static sync (HYPERGUEST_PLAN.md slab B).
+ * 6-hourly HyperGuest static sync (MIGRATION.md phase 4, slab B).
  * Same double-gate as every job here: ENABLE_CRON must be true on this PM2
  * instance AND HG_ENABLED must be true — otherwise the tick is a no-op, so
  * with the flag off this integration causes zero outbound traffic.

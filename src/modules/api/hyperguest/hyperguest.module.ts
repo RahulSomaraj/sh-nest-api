@@ -6,7 +6,7 @@ import { HyperGuestClientService } from './hyperguest-client.service';
 import { HyperGuestSyncService } from './hyperguest-sync.service';
 
 /**
- * HyperGuest supplier integration (phase 4, HYPERGUEST_PLAN.md).
+ * HyperGuest supplier integration (MIGRATION.md phase 4).
  * Providers only — no controller, so this module carries no routes of its own:
  * the admin sync trigger lives in HyperGuestAdminModule (admin/v2 surface) and
  * the 6-hourly sync cron in JobsModule. Everything is inert unless HG_ENABLED.
